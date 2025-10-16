@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=1b-2spk_n
+#SBATCH --job-name=8b-3spk_c
 #SBATCH --partition=002-partition-all
 #SBATCH --gpus=8
 #SBATCH --container-image=/lustre/users/shi/audio_llm-latest.sqsh
@@ -14,17 +14,17 @@ cd /lustre/users/shi/toolkits/m_speaker_llm/Multi-talker-ASR-with-LLMs/slurm
 
 stage=3
 stop_stage=3
-epoch=40
-corpus=libri2mix_noisy
+epoch=50
+corpus=libri3mix_clean
 encoder=wavlm
-decoder=Llama-3.2-1B
+decoder=Meta-Llama-3.1-8B
 
 encoder_freeze=false
 decoder_freeze=true
 adapter_only_decoder=true
 instruct=false
 talker_ctc=true
-talker_numbers=2
+talker_numbers=3
 eval_steps=1600
 virtual_env=/lustre/users/shi/toolkits/m_speaker_llm/venv
 

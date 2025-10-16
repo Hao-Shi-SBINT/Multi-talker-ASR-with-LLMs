@@ -134,10 +134,10 @@ def main():
     )
 
     # Some Special settings for increase dataloding speed
-    training_args.remove_unused_columns = False
+    # training_args.remove_unused_columns = False
     # training_args.dataloader_num_workers = 2
-    training_args.dataloader_pin_memory = True
-    training_args.group_by_length = False
+    # training_args.dataloader_pin_memory = True
+    # training_args.group_by_length = False
 
     # 11. Initialize Trainer
     trainer = Seq2SeqTrainer(

@@ -75,66 +75,12 @@ echo "++++ output_dir=$output_dir"
 
 if [[ "$instruct" == "true" ]]; then
   extra_args+=" --instruct"
+else
+  extra_args+="  "
 fi
 
 
 PY_BIN="$virtual_env/bin/python"
-
-echo "== Node: $(hostname)"
-echo "== Before fix: show current venv python status"
-ls -l "$PY_BIN" || echo "ls failed (maybe broken symlink)"
-echo "Resolved -> $(readlink -f "$PY_BIN" || echo NA)"
-echo "System python on this node:"
-command -v python3 || true
-python3 -V || true
-echo "Available /usr/bin/python* on this node:"
-ls -l /usr/bin/python* 2>/dev/null || true
-
-# --- Choose a working system Python on this compute node ---
-# Prefer Python 3.10 to match your original venv; fallback to 3.11 or 3.8 if needed.
-TARGET_PY="$(command -v python3.10 || true)"
-if [[ -z "${TARGET_PY}" ]]; then
-  # If 'python3' is 3.10 on this node, use it
-  if python3 -V 2>/dev/null | grep -qE '^Python 3\.10\.'; then
-    TARGET_PY="$(command -v python3)"
-  fi
-fi
-# Last resort: allow 3.11 or 3.8 (may require reinstalling wheels later)
-if [[ -z "${TARGET_PY}" ]]; then
-  TARGET_PY="$(command -v python3.11 || true)"
-fi
-if [[ -z "${TARGET_PY}" ]]; then
-  TARGET_PY="$(command -v python3.8 || true)"
-fi
-
-if [[ -z "${TARGET_PY}" ]]; then
-  echo "ERROR: No suitable system python3 found on this node." >&2
-  exit 1
-fi
-echo "Using system Python: $TARGET_PY ($("$TARGET_PY" -V 2>&1))"
-
-# --- Repair venv python symlinks if broken and align with node's interpreter ---
-# Reason: your venv/bin/python pointed to /usr/bin/python3.10, which doesn’t exist on some nodes.
-if [[ ! -x "$PY_BIN" ]] || { [[ -L "$PY_BIN" ]] && [[ ! -e "$(readlink -f "$PY_BIN")" ]]; }; then
-  echo ">>> Fixing venv python links to: $TARGET_PY"
-  ln -sf "$TARGET_PY" "$virtual_env/bin/python"
-  ln -sf "$TARGET_PY" "$virtual_env/bin/python3"
-  # If the chosen interpreter is 3.10, also create python3.10 name for tools that expect it
-  if "$TARGET_PY" -V 2>&1 | grep -qE '^Python 3\.10\.'; then
-    ln -sf "$TARGET_PY" "$virtual_env/bin/python3.10"
-  fi
-
-  # Upgrade venv layout in-place so all scripts' shebangs point to the new interpreter
-  "$TARGET_PY" -m venv --upgrade "$virtual_env"
-fi
-
-
-export TORCH_DISTRIBUTED_DEBUG=DETAIL
-export NCCL_DEBUG=INFO
-export NCCL_ASYNC_ERROR_HANDLING=1
-export CUDA_LAUNCH_BLOCKING=1
-export TORCH_SHOW_CPP_STACKTRACES=1
-
 
 
 # 1. Data preparing
@@ -142,9 +88,9 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     "$PY_BIN" utils/generate_dataset.py \
         --base_data_path /lustre/users/shi/toolkits/espnet/egs2/librimix/sot_asr1/data \
         --number ${talker_numbers} \
-	--suffix _clean \
-	--wav_scp_name wav_clean.scp \
-	--output_dir datasets/libri2mix_clean
+	--suffix '' \
+	--wav_scp_name wav.scp \
+	--output_dir datasets/libri${talker_numbers}mix_noisy
 fi
 
 # 2. Create the pre-trained AED from pre-trained speech encoder and LLMs

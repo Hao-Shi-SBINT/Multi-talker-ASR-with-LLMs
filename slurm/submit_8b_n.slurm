@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=1b-2spk_n
+#SBATCH --job-name=8b-2spk_n
 #SBATCH --partition=002-partition-all
 #SBATCH --gpus=8
 #SBATCH --container-image=/lustre/users/shi/audio_llm-latest.sqsh
@@ -17,7 +17,7 @@ stop_stage=3
 epoch=40
 corpus=libri2mix_noisy
 encoder=wavlm
-decoder=Llama-3.2-1B
+decoder=Meta-Llama-3.1-8B
 
 encoder_freeze=false
 decoder_freeze=true
