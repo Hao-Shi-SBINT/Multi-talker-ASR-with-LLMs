@@ -4,3 +4,4 @@ datasets
 dump
 exp
 slurm-*.out
+exp_finished

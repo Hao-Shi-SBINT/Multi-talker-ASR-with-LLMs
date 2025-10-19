@@ -82,6 +82,8 @@ def main():
 
     # 5. Load pretrained model, tokenizer, and feature extractor
     config = load_config(model_args)
+    config.talker_ctc = model_args.talker_ctc
+    config.talker_numbers = model_args.talker_numbers
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models

@@ -2,7 +2,7 @@
 # Modified from the original file at:
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/speech_encoder_decoder/modeling_speech_encoder_decoder.py
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 import torch
 from torch import nn
@@ -14,6 +14,7 @@ parent = os.path.abspath(os.path.join(__file__, "..", ".."))
 if parent not in sys.path:
     sys.path.insert(0, parent)
 from utils.generation_utils import GenerationMixin_Instruct
+from utils.split_labels_by_sc import split_k_speakers_and_lengths
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutput, Seq2SeqLMOutput
@@ -24,6 +25,12 @@ from transformers.models.auto.modeling_auto import AutoModel, AutoModelForCausal
 from transformers.models.speech_encoder_decoder.configuration_speech_encoder_decoder import SpeechEncoderDecoderConfig
 
 from modeling_llama import LlamaForCausalLM
+from modeling_wavlm import WavLMModel
+from separator import Separator
+from ctc import CTC
+from down_sampling import WavLMPostDownsample
+
+from torch.nn.utils.rnn import pad_sequence
 
 import logging
 logger = logging.getLogger(__name__)
@@ -85,7 +92,7 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         super().__init__(config)
 
         if encoder is None:
-            encoder = AutoModel.from_config(config.encoder)
+            encoder = WavLMModel._from_config(config.encoder)
 
         if decoder is None:
             decoder = LlamaForCausalLM._from_config(config.decoder)
@@ -127,6 +134,21 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             self.eosp_token_id = self.config.eosp_token_id
             self.eosr_token_id = self.config.eosr_token_id
             self.eoss_token_id = self.config.eoss_token_id
+
+        if self.talker_ctc:
+            self.down_sampling = WavLMPostDownsample(
+                    d_in=self.config.encoder.output_hidden_size,
+                    d_mid=2 * self.config.encoder.output_hidden_size,
+                    d_out=self.config.encoder.output_hidden_size,
+                )
+            self.separator = Separator(hidden_size=config.encoder.hidden_size, talker_numbers=self.talker_numbers)
+            self.ctc_blank_id = config.decoder.vocab_size+1
+            def make_ctc():
+                return CTC(
+                    odim=self.ctc_blank_id,
+                    encoder_output_size=config.encoder.output_hidden_size
+                )
+            self.serialized_ctc = nn.ModuleList([make_ctc() for _ in range(self.talker_numbers)])
 
         # get encoder output hidden size
         self.encoder_output_dim = getattr(config.encoder, "output_hidden_size", config.encoder.hidden_size)
@@ -380,6 +402,16 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_outputs = BaseModelOutput(*encoder_outputs)
 
         encoder_hidden_states = encoder_outputs[0]
+        wavlm_hidden_stages   = encoder_outputs[1]
+
+        # Here we add serialized CTC
+        if self.talker_ctc:
+            wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
+            sep_hidden_states = self.separator(wavlm_hidden_stages)
+            for i, ctc_head in enumerate(self.serialized_ctc[:self.talker_numbers]):
+                _argmax = ctc_head.argmax(sep_hidden_states[i])
+                _transcription, _transcription_shape = \
+                    self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
 
         # optionally project encoder_hidden_states
         if (
@@ -393,13 +425,37 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_attention_mask = self.encoder._get_feature_vector_attention_mask(
                 encoder_hidden_states.shape[1], attention_mask
             )
+            if self.talker_ctc:
+                encoder_attention_mask_ctc, len_encoder_attention_mask_ctc = self.encoder.get_downsampled_feature_mask(
+                    wavlm_hidden_stages.shape[1], attention_mask
+                )
         else:
             encoder_attention_mask = None
+            if self.talker_ctc:
+                encoder_attention_mask_ctc = None
 
         if (labels is not None) and (decoder_input_ids is None and decoder_inputs_embeds is None):
             # labels-> decoder_input_ids : add  
             decoder_input_ids = shift_tokens_right(
                 labels, self.config.pad_token_id, self.config.decoder_start_token_id
+            )
+            if self.instruct:
+                # TODO: here we only use same prompt, so it should be modified when the prompts are different
+                skip_eosr_ids = decoder_input_ids.masked_fill(
+                    decoder_input_ids == self.eosr_token_id,
+                    self.config.pad_token_id
+                )
+                _bosr_pos = (skip_eosr_ids[0] == self.bosr_token_id).nonzero(as_tuple=True)[0]
+                splited_decoder_input_ids = skip_eosr_ids[:, _bosr_pos+1:]
+            else:
+                splited_decoder_input_ids = decoder_input_ids[:, 1:]
+
+            label_spks, label_spks_lengths = split_k_speakers_and_lengths(
+                    labels=splited_decoder_input_ids,
+                    k_speakers=self.talker_numbers,
+                    sep_id=self.sc_token_id,
+                    pad_token_id=self.config.pad_token_id,
+                    ignore_id=-100,
             )
 
             # Here we make the speech-padded labels: with self.ignore_token_id (-100)
@@ -472,6 +528,16 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(logits.reshape(-1, self.decoder.config.vocab_size), labels.reshape(-1))
 
+            # Here we add serialized CTC loss
+            if self.talker_ctc:
+                hlens = encoder_attention_mask_ctc.sum(dim=1)
+                loss_ctc = 0
+                for i, ctc_head in enumerate(self.serialized_ctc[:self.talker_numbers]):
+                    loss_ctc += ctc_head(sep_hidden_states[i], hlens, label_spks[i], label_spks_lengths[i])
+
+                loss_ctc /= self.talker_numbers
+                loss = loss * 0.7 + loss_ctc * 0.3
+
         if not return_dict:
             if loss is not None:
                 return (loss,) + decoder_outputs + encoder_outputs
@@ -488,5 +554,47 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
+
+    def ctc_remove_duplicates_and_blank(
+        self,
+        argmax_tensor: torch.Tensor,
+        blank_id: int = 128258,
+        pad_id: int = 128257,
+    ) -> Tuple[torch.Tensor, List[int]]:
+        """
+        Process CTC argmax outputs by removing blanks and collapsing consecutive duplicates,
+        then pad sequences to a uniform length.
+
+        Args:
+            argmax_tensor (torch.Tensor): Shape (B, Tmax). Argmax over CTC logits per timestep.
+            blank_id (int): Token ID used for the CTC blank.
+            pad_id (int): Token ID used for right-side padding.
+
+        Returns:
+            padded_batch (torch.Tensor): Shape (B, max_seq_len) with sequences padded by `pad_id`.
+            lengths (List[int]): The true (unpadded) length of each processed sequence.
+        """
+        batch_sequences: List[torch.Tensor] = []
+        lengths: List[int] = []
+
+        for seq in argmax_tensor:
+            processed_seq: List[int] = []
+            prev_token = None
+
+            # Convert to Python list for easy iteration (detach/CPU safe for general use)
+            for token in seq.detach().cpu().tolist():
+                # Keep token if it's not blank and not a duplicate of the previous token
+                if token != blank_id and token != prev_token:
+                    processed_seq.append(token)
+                prev_token = token
+
+            batch_sequences.append(torch.tensor(processed_seq, dtype=torch.long))
+            lengths.append(len(processed_seq))
+
+        # Right-pad all sequences to the same length using `pad_id`
+        padded_batch = pad_sequence(batch_sequences, batch_first=True, padding_value=pad_id)
+
+        return padded_batch, lengths
+
 
 __all__ = ["SpeechEncoderDecoderModelLlama"]

@@ -144,6 +144,8 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
         --partial_others_unfreeze="${partial_others_unfreeze}" \
 	--gradient_checkpointing \
 	--fp16 \
+	--talker_ctc=${talker_ctc} \
+	--talker_numbers=${talker_numbers} \
 	--group_by_length \
 	--predict_with_generate \
 	--do_train true \
@@ -192,6 +194,8 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
             --fp16 \
             --group_by_length \
             --predict_with_generate \
+            --talker_ctc=${talker_ctc} \
+            --talker_numbers=${talker_numbers} \
             --do_train false \
             --do_eval true \
             --do_lower_case

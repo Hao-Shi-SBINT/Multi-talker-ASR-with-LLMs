@@ -46,6 +46,14 @@ class ModelArguments:
         default="main",
         metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
     )
+    talker_ctc: bool = field(
+        default=False,
+        metadata={"help": "Whether to use ctc after speech encoder."},
+    )
+    talker_numbers: int = field(
+        default=2,
+        metadata={"help": "The number of talker."},
+    )
     token: str = field(
         default=None,
         metadata={
