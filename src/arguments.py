@@ -82,6 +82,13 @@ class ModelArguments:
     freeze_decoder: bool = field(
         default=False, metadata={"help": "Whether to freeze the entire encoder of the seq2seq model."}
     )
+    train_mode: str = field(
+        default="attention",
+        metadata={"help": "The mode for training: only ctc / only attention / attention-ctc hybrid: please set is as one of ctc/attention/hybrid."},
+    )
+    ctc_decoding: bool = field(
+        default=False, metadata={"help": "Whether using CTC for decoding."}
+    )
     forced_decoder_ids: List[List[int]] = field(
         default=None,
         metadata={"help": "Deprecated. Please use the `language` and `task` arguments instead."},

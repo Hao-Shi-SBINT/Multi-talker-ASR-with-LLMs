@@ -20,6 +20,7 @@ from src.trainer_seq2seq import Seq2SeqTrainer
 from utils.checkpoint_checking_utils import resume_or_raise
 from utils.param_utils import checking_trainable_params
 from utils.unfreeze_utils import unfreeze_selected_params
+from utils.freeze_utils import freeze_model
 from utils.resample_dataset_utils import maybe_resample_dataset
 from utils.vectorized_dataset_utils import preprocess_and_filter
 from utils.metric_utils import compute_metrics
@@ -97,10 +98,18 @@ def main():
     logger.info("Tokenizer %s", tokenizer)
 
     model = load_aed_model(model_args, config, logger)
+    model.reset_loss_mode(mode=model_args.train_mode)
 
     # 6. Insert adapters into deocder and set the trainable parameters
-    insert_adapters(model, model_args, config)
-    unfreeze_selected_params(model, model_args)
+    # If the training mode is 'ctc': do not insert adapter and we should freeze all parameters
+    if(model_args.train_mode == 'ctc'):
+        freeze_model(model)
+        unfreeze_selected_params(model, model_args.train_mode, model_args)
+    else:
+        freeze_model(model)
+        if(model_args.adapter_only_decoder):
+            insert_adapters(model, model_args, config)
+        unfreeze_selected_params(model, model_args.train_mode, model_args)
 
     # 7. Some other settings for configuration
     # Here we write a new get_input_embeddings for fix the undefined of pre-defined function of SpeechEncoderDecoderModel
@@ -163,7 +172,11 @@ def main():
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
 
         best_model = trainer.model
-        save_model(best_model, os.path.join(training_args.output_dir, "model_unmerge.safetensors"))
+        if(model_args.train_mode == 'ctc'):
+            save_model(best_model, os.path.join(training_args.output_dir, "model.safetensors"))
+        else:
+            save_model(best_model, os.path.join(training_args.output_dir, "model_unmerge.safetensors"))
+
         tokenizer.save_pretrained(training_args.output_dir)
 
         metrics = train_result.metrics

@@ -35,7 +35,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 from transformers.models.wavlm.configuration_wavlm import WavLMConfig
 from transformers.models.wavlm.modeling_wavlm import WavLMPreTrainedModel
-from transformers.models.wavlm.modeling_wavlm import WavLMAdapter
+from transformers.models.wavlm.modeling_wavlm import WavLMAdapterLayer
 from transformers.models.wavlm.modeling_wavlm import WavLMGumbelVectorQuantizer
 from transformers.models.wavlm.modeling_wavlm import WavLMEncoderStableLayerNorm
 from transformers.models.wavlm.modeling_wavlm import WavLMEncoder
@@ -93,6 +93,7 @@ class WavLMBaseModelOutput(ModelOutput):
 
     last_hidden_state: torch.FloatTensor = None
     encoder_hidden_state: torch.FloatTensor = None
+    wavlm_down_hidden_states: torch.FloatTensor = None
     extract_features: torch.FloatTensor = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
@@ -216,6 +217,41 @@ def _compute_mask_indices(
     np.put_along_axis(spec_aug_mask, spec_aug_mask_idxs, 1, -1)
 
     return spec_aug_mask
+
+
+# Copied from transformers.models.wav2vec2.modeling_wav2vec2.Wav2Vec2Adapter with Wav2Vec2->WavLM
+class WavLMAdapter(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        # feature dim might need to be down-projected
+        if config.output_hidden_size != config.hidden_size:
+            self.proj = nn.Linear(config.hidden_size, config.output_hidden_size)
+            self.proj_layer_norm = nn.LayerNorm(config.output_hidden_size)
+        else:
+            self.proj = self.proj_layer_norm = None
+
+        self.layers = nn.ModuleList(WavLMAdapterLayer(config) for _ in range(config.num_adapter_layers))
+        self.layerdrop = config.layerdrop
+
+    def forward(self, hidden_states):
+        # down project hidden_states if necessary
+        if self.proj is not None and self.proj_layer_norm is not None:
+            hidden_states = self.proj(hidden_states)
+            hidden_states = self.proj_layer_norm(hidden_states)
+
+        hidden_states = hidden_states.transpose(1, 2)
+
+        for i, layer in enumerate(self.layers):
+            layerdrop_prob = np.random.random()
+            if not self.training or (layerdrop_prob > self.layerdrop):
+                hidden_states = layer(hidden_states)
+            if(i == 1):
+                wavlm_down_hidden_states = hidden_states
+
+        hidden_states = hidden_states.transpose(1, 2)
+        wavlm_down_hidden_states = wavlm_down_hidden_states.transpose(1, 2)
+        return hidden_states, wavlm_down_hidden_states
 
 
 WAVLM_START_DOCSTRING = r"""
@@ -414,7 +450,7 @@ class WavLMModel(WavLMPreTrainedModel):
         hidden_states = encoder_outputs[0]
 
         if self.adapter is not None:
-            hidden_states = self.adapter(hidden_states)
+            hidden_states, wavlm_down_hidden_states = self.adapter(hidden_states)
 
         if not return_dict:
             return (hidden_states, extract_features) + encoder_outputs[1:]
@@ -422,12 +458,12 @@ class WavLMModel(WavLMPreTrainedModel):
         return WavLMBaseModelOutput(
             last_hidden_state=hidden_states,
             encoder_hidden_state=encoder_hidden_states,
+            wavlm_down_hidden_states=wavlm_down_hidden_states,
             extract_features=extract_features,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
 
-    @torch.no_grad()
     def get_downsampled_feature_mask(
         self,
         feature_vector_length: int,          # T'  (length AFTER your CNN downsampling)
@@ -468,4 +504,48 @@ class WavLMModel(WavLMPreTrainedModel):
         mask = (ar < lengths.unsqueeze(1)).to(torch.bool)                                     # (B, T')
 
         return mask, lengths
+
+    def _get_feature_vector_attention_mask_without_adapter(
+        self, feature_vector_length: int, attention_mask: torch.LongTensor, add_adapter=None
+    ):
+        # Effectively attention_mask.sum(-1), but not inplace to be able to run
+        # on inference mode.
+        non_padded_lengths = attention_mask.cumsum(dim=-1)[:, -1]
+
+        output_lengths = self._get_feat_extract_output_lengths_without_adapter(non_padded_lengths, add_adapter=add_adapter)
+        output_lengths = output_lengths.to(torch.long)
+
+        batch_size = attention_mask.shape[0]
+
+        attention_mask = torch.zeros(
+            (batch_size, feature_vector_length), dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        # these two operations makes sure that all values before the output lengths idxs are attended to
+        attention_mask[(torch.arange(attention_mask.shape[0], device=attention_mask.device), output_lengths - 1)] = 1
+        attention_mask = attention_mask.flip([-1]).cumsum(-1).flip([-1]).bool()
+        return attention_mask
+
+    def _get_feat_extract_output_lengths_without_adapter(
+        self, input_lengths: Union[torch.LongTensor, int], add_adapter: Optional[bool] = None
+    ):
+        """
+        Computes the output length of the convolutional layers
+        """
+
+        add_adapter = self.config.add_adapter if add_adapter is None else add_adapter
+
+        def _conv_out_length(input_length, kernel_size, stride):
+            # 1D convolutional layer output length formula taken
+            # from https://pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
+            return torch.div(input_length - kernel_size, stride, rounding_mode="floor") + 1
+
+        for kernel_size, stride in zip(self.config.conv_kernel, self.config.conv_stride):
+            input_lengths = _conv_out_length(input_lengths, kernel_size, stride)
+
+        # if add_adapter:
+        #     for _ in range(self.config.num_adapter_layers):
+        #         input_lengths = _conv_out_length(input_lengths, 1, self.config.adapter_stride)
+
+        return input_lengths
+
 

@@ -225,6 +225,68 @@ if TYPE_CHECKING:
 logger = logging.get_logger(__name__)
 
 
+def debug_heads(trainer, head_attr: str = "serialized_ctc"):
+    """
+    返回 {head{i}_lr, head{i}_grad, head{i}_dparam, ...}
+    trainer: HF Trainer 实例（在 _maybe_log_save_evaluate 里就是 self）
+    head_attr: 模型里 CTC 头所在属性名
+    """
+    model = trainer.model
+    optim = trainer.optimizer
+    logs = {}
+    if optim is None or not hasattr(model, head_attr):
+        return logs
+
+    heads = getattr(model, head_attr)
+    try:
+        heads = list(heads)
+    except TypeError:
+        heads = [heads]
+
+    # --- lr helper ---
+    def lr_of(p):
+        for g in optim.param_groups:
+            if any(id(p) == id(q) for q in g["params"]):
+                return g.get("lr", 0.0)
+        return 0.0
+
+    # --- grad / lr ---
+    for i, head in enumerate(heads):
+        gnorm = 0.0
+        for p in head.parameters():
+            if p.grad is not None:
+                gnorm += float(p.grad.norm())
+        logs[f"head{i}_grad"] = gnorm
+        try:
+            p0 = next(head.parameters())
+            logs[f"head{i}_lr"] = float(lr_of(p0))
+        except StopIteration:
+            logs[f"head{i}_lr"] = 0.0
+
+    # --- Δparam 快照 ---
+    if not hasattr(trainer, "_per_head_snap") or trainer._per_head_snap is None:
+        trainer._per_head_snap = {
+            f"h{i}.{n}": p.detach().clone()
+            for i, head in enumerate(heads)
+            for n, p in head.named_parameters()
+        }
+        for i in range(len(heads)):
+            logs[f"head{i}_dparam"] = 0.0
+    else:
+        snap = trainer._per_head_snap
+        for i, head in enumerate(heads):
+            dsum = 0.0
+            for n, p in head.named_parameters():
+                k = f"h{i}.{n}"
+                prev = snap.get(k)
+                if prev is not None:
+                    dsum += (p.detach() - prev).norm().item()
+                snap[k] = p.detach().clone()
+            logs[f"head{i}_dparam"] = dsum
+
+    return logs
+
+
 class Seq2SeqTrainer(Trainer):
     @deprecate_kwarg("tokenizer", new_name="processing_class", version="5.0.0", raise_if_both_names=True)
     def __init__(
@@ -855,6 +917,108 @@ class Seq2SeqTrainer(Trainer):
             max_steps,
         )
 
+    def training_step(
+        self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
+    ) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs.
+
+        Subclass and override to inject custom behavior.
+
+        Args:
+            model (`nn.Module`):
+                The model to train.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument `labels`. Check your model's documentation for all accepted arguments.
+
+        Return:
+            `torch.Tensor`: The tensor with training loss on this batch.
+        """
+        model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+
+        inputs = self._prepare_inputs(inputs)
+        if is_sagemaker_mp_enabled():
+            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            return loss_mb.reduce_mean().detach().to(self.args.device)
+
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+        del inputs
+        if (
+            self.args.torch_empty_cache_steps is not None
+            and self.state.global_step % self.args.torch_empty_cache_steps == 0
+        ):
+            if is_torch_xpu_available():
+                torch.xpu.empty_cache()
+            elif is_torch_mlu_available():
+                torch.mlu.empty_cache()
+            elif is_torch_musa_available():
+                torch.musa.empty_cache()
+            elif is_torch_npu_available():
+                torch.npu.empty_cache()
+            elif is_torch_mps_available(min_version="2.0"):
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
+
+        kwargs = {}
+
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            """
+            loss_att = losses.get('attention')
+            loss_ctc_list = losses.get('ctc_losses')
+
+            if loss_att is None:
+                alpha = 0.0
+                beta = 1.0
+            elif not loss_ctc_list:
+                alpha = 1.0
+                beta = 0.0
+            else:
+                alpha = 0.7  # weights for attention loss
+                beta = 0.3   # weights for ctc losses
+
+            if loss_att is not None:
+                self.accelerator.backward(loss_att * alpha)
+
+            if loss_ctc_list:
+                per_head_weight = beta / len(loss_ctc_list)
+                for ctc_loss in loss_ctc_list:
+                    self.accelerator.backward(ctc_loss * per_head_weight, retain_graph=True)
+
+            total_loss = 0.0
+            if loss_att is not None:
+                total_loss += loss_att * alpha
+            if loss_ctc_list:
+                total_loss += sum(loss_ctc_list) * (beta / len(loss_ctc_list)) * len(loss_ctc_list)
+
+            if num_items_in_batch is None:
+                return total_loss.detach() / self.args.gradient_accumulation_steps
+            return total_loss.detach()
+            """
+            self.accelerator.backward(loss, **kwargs)
+            # Finally we need to normalize the loss for reporting
+            if num_items_in_batch is None:
+                return loss.detach() / self.args.gradient_accumulation_steps
+            return loss.detach()
+
+
     def _inner_training_loop(
         self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
     ):
@@ -1209,7 +1373,6 @@ class Seq2SeqTrainer(Trainer):
                     )
                     with context():
                         tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
-
                     if (
                         args.logging_nan_inf_filter
                         and not is_torch_xla_available()
@@ -1227,6 +1390,12 @@ class Seq2SeqTrainer(Trainer):
                     self.current_flos += float(self.floating_point_ops(inputs))
 
                     if do_sync_step:
+
+                        # if self.state.is_world_process_zero:
+                        #     pre_dbg = debug_heads(self, head_attr="serialized_ctc")
+                        #     pre_dbg = {f"pre_{k}": v for k, v in pre_dbg.items()}
+                        #     self.log(pre_dbg, start_time)
+
                         # Since we perform prefetching, we need to manually set sync_gradients to True
                         self.accelerator.gradient_state._set_sync_gradients(True)
 
@@ -1260,6 +1429,10 @@ class Seq2SeqTrainer(Trainer):
                                 grad_norm = _grad_norm
 
                         self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
+                        # if self.state.is_world_process_zero:
+                        #     pre_dbg = debug_heads(self, head_attr="serialized_ctc")
+                        #     pre_dbg = {f"pre_{k}": v for k, v in pre_dbg.items()}
+                        #     self.log(pre_dbg, start_time)
 
                         self.optimizer.step()
 
@@ -1275,6 +1448,7 @@ class Seq2SeqTrainer(Trainer):
                         self.state.global_step += 1
                         self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                         self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+
                         self._maybe_log_save_evaluate(
                             tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time
                         )

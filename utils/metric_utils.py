@@ -12,6 +12,8 @@
 
 import evaluate
 import numpy as np  # Optional, but HF Trainer sometimes passes numpy arrays
+import concurrent.futures
+
 
 def compute_metrics(tokenizer, cache_dir: str = None, ignore_id: int = -100):
     """
@@ -29,7 +31,7 @@ def compute_metrics(tokenizer, cache_dir: str = None, ignore_id: int = -100):
     callable
         A function `compute_metrics(pred)` compatible with HF Trainer.
     """
-    metric = evaluate.load("wer")
+    metric = evaluate.load("wer", cache_dir=cache_dir)
 
     def computing_metrics(pred):
         """
@@ -46,7 +48,6 @@ def compute_metrics(tokenizer, cache_dir: str = None, ignore_id: int = -100):
         # Decode
         pred_str  = tokenizer.batch_decode(pred_ids,  skip_special_tokens=True)
         label_str = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
         wer = metric.compute(predictions=pred_str, references=label_str)
         return {"wer": wer}
 

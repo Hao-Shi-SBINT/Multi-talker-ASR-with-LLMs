@@ -14,6 +14,7 @@ parent = os.path.abspath(os.path.join(__file__, "..", ".."))
 if parent not in sys.path:
     sys.path.insert(0, parent)
 from utils.generation_utils import GenerationMixin_Instruct
+from utils.generation_ctc_utils import GenerationMixin_CTC
 from utils.split_labels_by_sc import split_k_speakers_and_lengths
 
 from transformers.configuration_utils import PretrainedConfig
@@ -29,6 +30,7 @@ from modeling_wavlm import WavLMModel
 from separator import Separator
 from ctc import CTC
 from down_sampling import WavLMPostDownsample
+from losses import HybridLoss
 
 from torch.nn.utils.rnn import pad_sequence
 
@@ -136,19 +138,29 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             self.eoss_token_id = self.config.eoss_token_id
 
         if self.talker_ctc:
+            """
             self.down_sampling = WavLMPostDownsample(
                     d_in=self.config.encoder.output_hidden_size,
                     d_mid=2 * self.config.encoder.output_hidden_size,
                     d_out=self.config.encoder.output_hidden_size,
                 )
-            self.separator = Separator(hidden_size=config.encoder.hidden_size, talker_numbers=self.talker_numbers)
+            """
+            self.separator = Separator(hidden_size=self.config.encoder.output_hidden_size, talker_numbers=self.talker_numbers)
             self.ctc_blank_id = config.decoder.vocab_size+1
             def make_ctc():
                 return CTC(
                     odim=self.ctc_blank_id,
                     encoder_output_size=config.encoder.output_hidden_size
                 )
+            # Here I found that
+            # Using modulelist the final ctc head can not be trained well
+            # This may be caused by loss plateau
+            # But currecntly I do not want to modify the training loop, so I directly define the ctc head 1, 2, 3
             self.serialized_ctc = nn.ModuleList([make_ctc() for _ in range(self.talker_numbers)])
+            # self.ctc_spk1 = make_ctc()
+            # self.ctc_spk2 = make_ctc()
+            # if self.talker_numbers == 3:
+            #     self.ctc_spk3 = make_ctc()
 
         # get encoder output hidden size
         self.encoder_output_dim = getattr(config.encoder, "output_hidden_size", config.encoder.hidden_size)
@@ -163,6 +175,19 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             raise ValueError(
                 f"The encoder {self.encoder} should not have a LM Head. Please use a model without LM Head"
             )
+
+        # we define the losses computing class here
+        self.losses = HybridLoss(
+                alpha=0.7, 
+                mode="hybrid",
+                blank_id=self.ctc_blank_id-1, 
+                enable_blank_check=True,
+                log_every_steps=100, 
+                ) # using hybrid mode to do the initilization, then we will rewrite the mode
+
+    def reset_loss_mode(self, alpha=0.7, mode='hybrid'):
+        self.losses.mode = mode
+        self.losses.alpha = alpha
 
     def get_encoder(self):
         return self.encoder
@@ -321,6 +346,12 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         """
         return GenerationMixin_Instruct.generate(self, *args, **kwargs)
 
+    def generate_ctc(self, *args, **kwargs):
+        """
+        Forward every call to the mix-in’s version explicitly.
+        """
+        return GenerationMixin_CTC.generate(self, *args, **kwargs)
+
     @staticmethod
     def _expand_inputs_for_generation(*args, **kwargs):
         # delegate to the mix-in’s staticmethod
@@ -349,6 +380,31 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             streamer=streamer,
             **model_kwargs,
         )
+
+    def _sample_ctc(
+        self,
+        input_ids,
+        logits_processor,
+        stopping_criteria,
+        generation_config,
+        synced_gpus,
+        streamer=None,
+        **model_kwargs,
+    ):
+        """
+        Forward every call to the mix-in’s custom `_sample`.
+        """
+        return GenerationMixin_CTC._sample(
+            self,
+            input_ids=input_ids,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            generation_config=generation_config,
+            synced_gpus=synced_gpus,
+            streamer=streamer,
+            **model_kwargs,
+        )
+
 
     def forward(
         self,
@@ -403,15 +459,30 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
 
         encoder_hidden_states = encoder_outputs[0]
         wavlm_hidden_stages   = encoder_outputs[1]
+        # wavlm_down_hidden_stages = encoder_outputs[2]
 
         # Here we add serialized CTC
         if self.talker_ctc:
-            wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
-            sep_hidden_states = self.separator(wavlm_hidden_stages)
-            for i, ctc_head in enumerate(self.serialized_ctc[:self.talker_numbers]):
-                _argmax = ctc_head.argmax(sep_hidden_states[i])
-                _transcription, _transcription_shape = \
-                    self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+            # wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
+            sep_hidden_stages = self.separator(wavlm_hidden_stages)
+            ctc_transcriptions = []
+
+            # _argmax_spk1 = self.ctc_spk1.argmax(sep_hidden_stages[0])
+            # _argmax_spk2 = self.ctc_spk2.argmax(sep_hidden_stages[1])
+
+            # _transcription_spk1, _transcription_spk1_shape = self.ctc_remove_duplicates_and_blank(_argmax_spk1, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+            # _transcription_spk2, _transcription_spk2_shape = self.ctc_remove_duplicates_and_blank(_argmax_spk2, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+            # ctc_transcriptions.append(_transcription_spk1)
+            # ctc_transcriptions.append(_transcription_spk2)
+
+            # if(self.talker_numbers == 3):
+            #     _argmax_spk3 = self.ctc_spk3.argmax(sep_hidden_stages[2])
+            #     _transcription_spk3, _transcription_spk3_shape = self.ctc_remove_duplicates_and_blank(_argmax_spk3, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+            #     ctc_transcriptions.append(_transcription_spk3)
+            # for i, ctc_head in enumerate(self.serialized_ctc):
+            #     _argmax = ctc_head.argmax(sep_hidden_stages[i])
+            #     _transcription, _transcription_shape = self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+            #     ctc_transcriptions.append(_transcription)
 
         # optionally project encoder_hidden_states
         if (
@@ -426,8 +497,9 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 encoder_hidden_states.shape[1], attention_mask
             )
             if self.talker_ctc:
-                encoder_attention_mask_ctc, len_encoder_attention_mask_ctc = self.encoder.get_downsampled_feature_mask(
-                    wavlm_hidden_stages.shape[1], attention_mask
+                 # encoder_attention_mask_ctc, len_encoder_attention_mask_ctc = self.encoder._get_downsampled_feature_mask(
+                encoder_attention_mask_ctc = self.encoder._get_feature_vector_attention_mask_without_adapter(
+                    wavlm_hidden_stages.shape[1], attention_mask, add_adapter=None,
                 )
         else:
             encoder_attention_mask = None
@@ -456,6 +528,7 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                     sep_id=self.sc_token_id,
                     pad_token_id=self.config.pad_token_id,
                     ignore_id=-100,
+                    allow_empty_segment=False,
             )
 
             # Here we make the speech-padded labels: with self.ignore_token_id (-100)
@@ -524,19 +597,40 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         # Compute loss independent from decoder (as some shift the logits inside them)
         loss = None
         if labels is not None:
-            logits = decoder_outputs.logits if return_dict else decoder_outputs[0]
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.reshape(-1, self.decoder.config.vocab_size), labels.reshape(-1))
 
-            # Here we add serialized CTC loss
-            if self.talker_ctc:
-                hlens = encoder_attention_mask_ctc.sum(dim=1)
-                loss_ctc = 0
-                for i, ctc_head in enumerate(self.serialized_ctc[:self.talker_numbers]):
-                    loss_ctc += ctc_head(sep_hidden_states[i], hlens, label_spks[i], label_spks_lengths[i])
+            # talker_ctc = [self.ctc_spk1, self.ctc_spk2]
+            # if self.talker_numbers == 3:
+            #     talker_ctc.append(self.ctc_spk3)
 
-                loss_ctc /= self.talker_numbers
+            loss = self.losses(
+                decoder_outputs=decoder_outputs,
+                labels=labels,
+                decoder_vocab_size=self.decoder.config.vocab_size,
+                talker_ctc=self.serialized_ctc,
+                sep_hidden_states=sep_hidden_stages,
+                encoder_attention_mask_ctc=encoder_attention_mask_ctc,
+                label_spks=label_spks,
+                label_spks_lengths=label_spks_lengths,
+                talker_numbers=self.talker_numbers,
+                return_dict=return_dict,
+            )
+            
+            # Now we create a new class for losses computing, if the training goes well
+            # the following contents should be deleted
+            """
+            logits = decoder_outputs.logits if return_dict else decoder_outputs[0] 
+            loss_fct = CrossEntropyLoss() 
+            loss = loss_fct(logits.reshape(-1, self.decoder.config.vocab_size), labels.reshape(-1)) 
+            # Here we add serialized CTC loss 
+            if self.talker_ctc: 
+                hlens = encoder_attention_mask_ctc.sum(dim=1) 
+                loss_ctc = 0 
+                for i, ctc_head in enumerate(self.serialized_ctc[:self.talker_numbers]): 
+                    loss_ctc += ctc_head(sep_hidden_states[i], hlens, label_spks[i], label_spks_lengths[i]) 
+
+                loss_ctc /= self.talker_numbers 
                 loss = loss * 0.7 + loss_ctc * 0.3
+            """
 
         if not return_dict:
             if loss is not None:
@@ -554,6 +648,75 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
+
+    def forward_ctc(
+        self,
+        inputs: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        prompt_ids: Optional[torch.LongTensor] = None,
+        decoder_input_ids: Optional[torch.LongTensor] = None,
+        decoder_attention_mask: Optional[torch.BoolTensor] = None,
+        encoder_outputs: Optional[Tuple[torch.FloatTensor]] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        input_values: Optional[torch.FloatTensor] = None,
+        input_features: Optional[torch.FloatTensor] = None,
+        return_dict: Optional[bool] = None,
+        **kwargs,
+    ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        kwargs_encoder = {argument: value for argument, value in kwargs.items() if not argument.startswith("decoder_")}
+
+        kwargs_decoder = {
+            argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
+        }
+        if "num_items_in_batch" in kwargs_encoder:
+            kwargs_decoder["num_items_in_batch"] = kwargs_encoder.pop("num_items_in_batch", None)
+
+        if encoder_outputs is None:
+            if inputs is None:
+                if input_values is not None and input_features is not None:
+                    raise ValueError("You cannot specify both input_values and input_features at the same time")
+                elif input_values is not None:
+                    inputs = input_values
+                elif input_features is not None:
+                    inputs = input_features
+                else:
+                    raise ValueError("You have to specify either input_values or input_features")
+
+            encoder_outputs = self.encoder(
+                inputs,
+                attention_mask=attention_mask,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                **kwargs_encoder,
+            )
+        elif isinstance(encoder_outputs, tuple):
+            encoder_outputs = BaseModelOutput(*encoder_outputs)
+
+        encoder_hidden_states = encoder_outputs[0]
+        wavlm_hidden_stages   = encoder_outputs[1]
+
+        # Here we add serialized CTC
+        ctc_transcription_list = []
+        if self.talker_ctc:
+            wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
+            sep_hidden_states = self.separator(wavlm_hidden_stages)
+            for i, ctc_head in enumerate(self.serialized_ctc):
+                _argmax = ctc_head.argmax(sep_hidden_states[i])
+                _transcription, _transcription_shape = \
+                    self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+                ctc_transcription_list.append(_transcription)
+
+        ctc_transcription = torch.cat(ctc_transcription_list, dim=1)
+
+        return ctc_transcription
 
     def ctc_remove_duplicates_and_blank(
         self,

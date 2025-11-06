@@ -168,17 +168,30 @@ def main():
             else:
                 prompts = None
 
-            est = model.generate(
-                    inputs=input_feature,
-                    prompt_ids=prompts,
-                    max_length=150,
-                    num_beams=1,
-                    synced_gpus=False,
-                    use_cache=True,
-                  )
+            if(model_args.ctc_decoding):
+                est = model.generate_ctc(
+                        inputs=input_feature,
+                        prompt_ids=prompts,
+                        max_length=150,
+                        num_beams=1,
+                        synced_gpus=False,
+                        use_cache=True,
+                      )
+            else:
+                est = model.generate(
+                        inputs=input_feature,
+                        prompt_ids=prompts,
+                        max_length=150,
+                        num_beams=1,
+                        synced_gpus=False,
+                        use_cache=True,
+                      )
 
             label_text = tokenizer.decode(torch.tensor(vectorized_datasets["eval"][i]['labels']))
             label_text = skip_special_tokens(label_text)
+
+            if(model_args.ctc_decoding):
+                label_text = label_text.replace(tokenizer.decode(vectorized_datasets["eval"][i]['prompt_ids'][1:-4]), "")
 
             est_text = tokenizer.decode(est.reshape(-1), skip_special_tokens=False)
             est_text = skip_special_tokens(est_text)

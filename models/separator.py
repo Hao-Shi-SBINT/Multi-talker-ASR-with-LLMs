@@ -59,37 +59,73 @@ class StackedCustomLSTM(nn.Module):
 
         return torch.cat(outputs, dim=1)  # [B, T, hidden_size]
 
-
 class Separator(nn.Module):
-    def __init__(self, hidden_size, talker_numbers: int, dropout=0.2):
+    """
+    Multi-speaker separator with a shared trunk and N independent branches.
+    Each branch: Linear -> ReLU -> LayerNorm -> Dropout -> (optional residual add)
+    Output: List[Tensor] of length N, each with shape (B, T, H)
+    """
+    def __init__(
+        self,
+        hidden_size: int,
+        talker_numbers: int,
+        dropout: float = 0.2,
+        use_residual: bool = True,
+    ):
         super().__init__()
-        self.talker_numbers = talker_numbers
+        self.N = talker_numbers
+        self.H = hidden_size
+        self.use_residual = use_residual
 
+        # Shared backbone for temporal modeling
         self.lstm = StackedCustomLSTM(
             input_size=hidden_size,
             hidden_size=hidden_size,
             num_layers=2,
             dropout=dropout,
         )
-        self.norm = nn.LayerNorm(hidden_size)
+        self.pre_ln = nn.LayerNorm(hidden_size)
 
+        # Per-branch subnetwork (independent LayerNorm stabilizes each head’s scale)
         def make_branch():
             return nn.Sequential(
-                nn.Linear(hidden_size, hidden_size),
-                nn.ReLU()
+                nn.Linear(self.H, self.H),
+                nn.ReLU(),
+                nn.LayerNorm(self.H),
+                nn.Dropout(dropout),
             )
+        self.sep_branches = nn.ModuleList([make_branch() for _ in range(self.N)])
 
-        # 动态创建 N 条支路
-        self.sep_branches = nn.ModuleList([make_branch() for _ in range(talker_numbers)])
+        # Optional residual connection scale (learnable): y_i = branch(h) + res_scale * h
+        self.res_scale = nn.Parameter(torch.tensor(1.0)) if use_residual else None
 
-    def forward(self, x):
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        """Conservative init to reduce early gradient spikes."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):  # x: (B, T, H)
         """
-        x: (B, T, H) 或 (B, H)（按你原来的 StackedCustomLSTM 接口）
-        返回: List[Tensor]，长度 = talker_numbers，每个与 x 同形状的 hidden 大小
+        Args:
+            x: Input features (B, T, H)
+        Returns:
+            List[Tensor]: length N, each (B, T, H)
         """
-        x = self.lstm(x)
-        x = self.norm(x)
+        # Shared trunk
+        h = self.lstm(x)   # (B, T, H)
+        h = self.pre_ln(h)
 
-        outs = [branch(x) for branch in self.sep_branches]
-        return outs  # e.g. [out1, out2, ..., outN]
+        # Per-branch processing
+        outs = []
+        for branch in self.sep_branches:
+            y = branch(h)  # (B, T, H)
+            if self.use_residual:
+                y = y + self.res_scale * h
+            outs.append(y)
 
+        return outs  # List[(B, T, H)]
