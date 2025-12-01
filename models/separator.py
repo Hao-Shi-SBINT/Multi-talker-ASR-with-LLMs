@@ -1,7 +1,8 @@
-import numpy as np
+# separator.py
 import torch
 import torch.nn as nn
 
+# --- your custom modules (unchanged) ---
 class CustomLSTMCell(nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
@@ -46,7 +47,6 @@ class StackedCustomLSTM(nn.Module):
         c = [torch.zeros(B, self.hidden_size, device=device) for _ in range(self.num_layers)]
 
         outputs = []
-
         for t in range(T):
             x_t = x[:, t, :]  # [B, input_size]
             for l in range(self.num_layers):
@@ -56,76 +56,112 @@ class StackedCustomLSTM(nn.Module):
                     x_t = self.norms[l](x_t)
                 x_t = self.dropout(x_t)
             outputs.append(x_t.unsqueeze(1))  # [B, 1, hidden_size]
-
         return torch.cat(outputs, dim=1)  # [B, T, hidden_size]
+
 
 class Separator(nn.Module):
     """
-    Multi-speaker separator with a shared trunk and N independent branches.
-    Each branch: Linear -> ReLU -> LayerNorm -> Dropout -> (optional residual add)
-    Output: List[Tensor] of length N, each with shape (B, T, H)
+    Pipeline:
+      (1) Pre-projection: Linear(in_dim -> hidden_size) + optional activation + LayerNorm
+      (2) StackedCustomLSTM(input_size=hidden_size, hidden_size=hidden_size, ...)
+      (3) Post-LSTM LayerNorm
+      (4) N symmetric branches (per head/private):
+          MLP: Linear(hidden_size->hidden_size) + ReLU + Linear(hidden_size->in_dim) + ReLU
+          (+ optional LayerNorm on in_dim)
+
+    I/O:
+      x: (B, T, in_dim) -> List[N] of (B, T, in_dim)
+
+    NOTE:
+      Each branch output dim = in_dim (same as your current behavior),
+      so downstream CTC heads that expect in_dim will keep working.
     """
     def __init__(
         self,
+        in_dim: int,
         hidden_size: int,
         talker_numbers: int,
-        dropout: float = 0.2,
-        use_residual: bool = True,
+        *,
+        num_layers: int = 2,
+        dropout: float = 0.2,              # per-time-step dropout inside your custom LSTM
+        use_lstm_layernorm: bool = False,  # pass to StackedCustomLSTM
+        proj_activation: str | None = "relu",  # 'relu' | 'gelu' | None
+        use_branch_ln: bool = True,        # LayerNorm after each branch
+        branch_dropout: float = 0.0,       # optional dropout inside each branch
+        break_symmetry_eps: float = 1e-3,  # tiny bias offset to break symmetry
     ):
         super().__init__()
-        self.N = talker_numbers
-        self.H = hidden_size
-        self.use_residual = use_residual
+        assert talker_numbers >= 2, "talker_numbers must be >= 2"
+        self.talker_numbers = talker_numbers
+        self.hidden_size = hidden_size
+        self.in_dim = in_dim
 
-        # Shared backbone for temporal modeling
+        # (1) Pre-projection to hidden_size
+        self.pre_proj = nn.Linear(in_dim, hidden_size, bias=True)
+        self.pre_act = {"relu": nn.ReLU(), "gelu": nn.GELU(), None: nn.Identity()}[proj_activation]
+        self.pre_ln  = nn.LayerNorm(hidden_size)
+
+        # (2) Custom LSTM over hidden_size
         self.lstm = StackedCustomLSTM(
             input_size=hidden_size,
             hidden_size=hidden_size,
-            num_layers=2,
+            num_layers=num_layers,
             dropout=dropout,
+            use_layernorm=use_lstm_layernorm,
         )
-        self.pre_ln = nn.LayerNorm(hidden_size)
 
-        # Per-branch subnetwork (independent LayerNorm stabilizes each head’s scale)
+        # (3) Post-LSTM LayerNorm
+        self.post_ln = nn.LayerNorm(hidden_size)
+
+        # (4) Per-speaker/private branches
         def make_branch():
-            return nn.Sequential(
-                nn.Linear(self.H, self.H),
+            layers = [
+                nn.Linear(hidden_size, hidden_size),
                 nn.ReLU(),
-                nn.LayerNorm(self.H),
-                nn.Dropout(dropout),
-            )
-        self.sep_branches = nn.ModuleList([make_branch() for _ in range(self.N)])
+            ]
+            if branch_dropout and branch_dropout > 0:
+                layers.append(nn.Dropout(branch_dropout))
 
-        # Optional residual connection scale (learnable): y_i = branch(h) + res_scale * h
-        self.res_scale = nn.Parameter(torch.tensor(1.0)) if use_residual else None
+            layers += [
+                nn.Linear(hidden_size, in_dim),
+                nn.ReLU(),
+            ]
+            if use_branch_ln:
+                layers.append(nn.LayerNorm(in_dim))
+            return nn.Sequential(*layers)
 
-        self._reset_parameters()
+        self.sep_branches = nn.ModuleList([make_branch() for _ in range(talker_numbers)])
 
-    def _reset_parameters(self):
-        """Conservative init to reduce early gradient spikes."""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        # ---- init linears ----
+        nn.init.xavier_uniform_(self.pre_proj.weight)
+        nn.init.zeros_(self.pre_proj.bias)
 
-    def forward(self, x):  # x: (B, T, H)
+        # branch init + tiny symmetry breaking
+        for bi, m in enumerate(self.sep_branches):
+            lin1 = m[0]
+            lin2 = m[3] if isinstance(m[2], nn.Dropout) else m[2]  # handle optional dropout
+            nn.init.xavier_uniform_(lin1.weight); nn.init.zeros_(lin1.bias)
+            nn.init.xavier_uniform_(lin2.weight); nn.init.zeros_(lin2.bias)
+
+            # break symmetry slightly so branches don't start identical
+            if break_symmetry_eps and break_symmetry_eps > 0:
+                lin2.bias.data += break_symmetry_eps * bi
+        # ----------------------
+
+    def forward(self, x: torch.Tensor):
         """
         Args:
-            x: Input features (B, T, H)
+            x: (B, T, in_dim)
         Returns:
-            List[Tensor]: length N, each (B, T, H)
+            List[talker_numbers] of (B, T, in_dim)
         """
-        # Shared trunk
-        h = self.lstm(x)   # (B, T, H)
-        h = self.pre_ln(h)
+        y = self.pre_proj(x)      # (B, T, hidden_size)
+        y = self.pre_act(y)
+        y = self.pre_ln(y)
 
-        # Per-branch processing
-        outs = []
-        for branch in self.sep_branches:
-            y = branch(h)  # (B, T, H)
-            if self.use_residual:
-                y = y + self.res_scale * h
-            outs.append(y)
+        y = self.lstm(y)          # (B, T, hidden_size)
+        y = self.post_ln(y)       # (B, T, hidden_size)
 
-        return outs  # List[(B, T, H)]
+        outs = [branch(y) for branch in self.sep_branches]  # N × (B, T, in_dim)
+        return outs
+

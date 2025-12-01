@@ -28,6 +28,8 @@ from transformers.models.speech_encoder_decoder.configuration_speech_encoder_dec
 from modeling_llama import LlamaForCausalLM
 from modeling_wavlm import WavLMModel
 from separator import Separator
+from separator_mask import MaskSeparator
+from separator_stable import StableSoftmaxSeparator
 from ctc import CTC
 from down_sampling import WavLMPostDownsample
 from losses import HybridLoss
@@ -138,29 +140,51 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             self.eoss_token_id = self.config.eoss_token_id
 
         if self.talker_ctc:
+            self.separator = Separator(
+                in_dim=self.config.encoder.output_hidden_size,
+                hidden_size=config.separator_hidden,
+                talker_numbers=self.talker_numbers
+            )
             """
-            self.down_sampling = WavLMPostDownsample(
-                    d_in=self.config.encoder.output_hidden_size,
-                    d_mid=2 * self.config.encoder.output_hidden_size,
-                    d_out=self.config.encoder.output_hidden_size,
-                )
+            self.separator = MaskSeparator(
+                in_dim=self.config.encoder.output_hidden_size,
+                hidden_size=self.config.encoder.output_hidden_size,
+                talker_numbers=self.talker_numbers,
+                num_layers=2,
+                dropout=0.2,
+                route="topk",         # or "softmax" / "entmax"
+                temperature=0.7,
+                topk_k=2,             # recommended for 3-spk
+                force_preproj=True,   # strongly recommended if encoder is frozen
+                use_branch_ff=True,
+                use_custom_lstm=True, # you have StackedCustomLSTM
+            )
             """
-            self.separator = Separator(hidden_size=self.config.encoder.output_hidden_size, talker_numbers=self.talker_numbers)
+            """
+            self.separator = StableSoftmaxSeparator(
+                in_dim=self.config.encoder.output_hidden_size,  # e.g., 1024
+                sep_dim=config.separator_hidden,
+                num_heads=self.talker_numbers,                  # 2 or 3
+                num_layers=2,
+                dropout=0.2,
+                bidirectional=True,
+                use_layernorm=True,
+                route_tau=0.6,
+                route_gamma=None,   # 先关
+                route_pmin=None,    # 先关
+                out_align_dim=self.config.encoder.output_hidden_size  # e.g., 1024，对齐到 CTC 期望
+            )
+            """
             self.ctc_blank_id = config.decoder.vocab_size+1
             def make_ctc():
                 return CTC(
                     odim=self.ctc_blank_id,
                     encoder_output_size=config.encoder.output_hidden_size
                 )
-            # Here I found that
-            # Using modulelist the final ctc head can not be trained well
-            # This may be caused by loss plateau
-            # But currecntly I do not want to modify the training loop, so I directly define the ctc head 1, 2, 3
             self.serialized_ctc = nn.ModuleList([make_ctc() for _ in range(self.talker_numbers)])
-            # self.ctc_spk1 = make_ctc()
-            # self.ctc_spk2 = make_ctc()
-            # if self.talker_numbers == 3:
-            #     self.ctc_spk3 = make_ctc()
+        else:
+            self.ctc_blank_id = config.decoder.vocab_size+1
+            self.serialized_ctc = []
 
         # get encoder output hidden size
         self.encoder_output_dim = getattr(config.encoder, "output_hidden_size", config.encoder.hidden_size)
@@ -178,16 +202,12 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
 
         # we define the losses computing class here
         self.losses = HybridLoss(
-                alpha=0.7, 
-                mode="hybrid",
+                alpha=config.ctc_alpha, 
+                mode=config.train_mode,
                 blank_id=self.ctc_blank_id-1, 
                 enable_blank_check=True,
                 log_every_steps=100, 
                 ) # using hybrid mode to do the initilization, then we will rewrite the mode
-
-    def reset_loss_mode(self, alpha=0.7, mode='hybrid'):
-        self.losses.mode = mode
-        self.losses.alpha = alpha
 
     def get_encoder(self):
         return self.encoder
@@ -458,31 +478,23 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_outputs = BaseModelOutput(*encoder_outputs)
 
         encoder_hidden_states = encoder_outputs[0]
-        wavlm_hidden_stages   = encoder_outputs[1]
-        # wavlm_down_hidden_stages = encoder_outputs[2]
+        wavlm_hidden_stages   = encoder_outputs[1]      # un-downsampled feature
+        wavlm_down_hidden_stages = encoder_outputs[2]
+        mixed_encoding_feature = wavlm_hidden_stages
 
         # Here we add serialized CTC
         if self.talker_ctc:
-            # wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
-            sep_hidden_stages = self.separator(wavlm_hidden_stages)
+            sep_hidden_stages = self.separator(mixed_encoding_feature)
+            # sep_hidden_stages, _ = self.separator(mixed_encoding_feature)
+            # sep_hidden_stages, sep_masks, _, _ = self.separator(mixed_encoding_feature)
+
             ctc_transcriptions = []
-
-            # _argmax_spk1 = self.ctc_spk1.argmax(sep_hidden_stages[0])
-            # _argmax_spk2 = self.ctc_spk2.argmax(sep_hidden_stages[1])
-
-            # _transcription_spk1, _transcription_spk1_shape = self.ctc_remove_duplicates_and_blank(_argmax_spk1, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
-            # _transcription_spk2, _transcription_spk2_shape = self.ctc_remove_duplicates_and_blank(_argmax_spk2, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
-            # ctc_transcriptions.append(_transcription_spk1)
-            # ctc_transcriptions.append(_transcription_spk2)
-
-            # if(self.talker_numbers == 3):
-            #     _argmax_spk3 = self.ctc_spk3.argmax(sep_hidden_stages[2])
-            #     _transcription_spk3, _transcription_spk3_shape = self.ctc_remove_duplicates_and_blank(_argmax_spk3, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
-            #     ctc_transcriptions.append(_transcription_spk3)
             # for i, ctc_head in enumerate(self.serialized_ctc):
             #     _argmax = ctc_head.argmax(sep_hidden_stages[i])
             #     _transcription, _transcription_shape = self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
             #     ctc_transcriptions.append(_transcription)
+        else:
+            sep_hidden_stages = None
 
         # optionally project encoder_hidden_states
         if (
@@ -497,10 +509,15 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 encoder_hidden_states.shape[1], attention_mask
             )
             if self.talker_ctc:
-                 # encoder_attention_mask_ctc, len_encoder_attention_mask_ctc = self.encoder._get_downsampled_feature_mask(
-                encoder_attention_mask_ctc = self.encoder._get_feature_vector_attention_mask_without_adapter(
-                    wavlm_hidden_stages.shape[1], attention_mask, add_adapter=None,
+                encoder_attention_mask_ctc = self.encoder._get_feature_vector_attention_mask_x0(
+                    mixed_encoding_feature.shape[1], attention_mask
                 )
+                # encoder_attention_mask_ctc = self.encoder._get_feature_vector_attention_mask_x4(
+                #         mixed_encoding_feature.shape[1], attention_mask
+                # )
+
+            else:
+                encoder_attention_mask_ctc = None
         else:
             encoder_attention_mask = None
             if self.talker_ctc:
@@ -527,6 +544,7 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                     k_speakers=self.talker_numbers,
                     sep_id=self.sc_token_id,
                     pad_token_id=self.config.pad_token_id,
+                    end_token_id=self.config.pad_token_id,
                     ignore_id=-100,
                     allow_empty_segment=False,
             )
@@ -596,12 +614,9 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
 
         # Compute loss independent from decoder (as some shift the logits inside them)
         loss = None
+        ctc_per_head = None
         if labels is not None:
-
-            # talker_ctc = [self.ctc_spk1, self.ctc_spk2]
-            # if self.talker_numbers == 3:
-            #     talker_ctc.append(self.ctc_spk3)
-
+            shared_params = list(self.encoder.parameters()) + list(self.separator.parameters())
             loss = self.losses(
                 decoder_outputs=decoder_outputs,
                 labels=labels,
@@ -612,33 +627,17 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 label_spks=label_spks,
                 label_spks_lengths=label_spks_lengths,
                 talker_numbers=self.talker_numbers,
+                shared_params=shared_params,
                 return_dict=return_dict,
             )
             
-            # Now we create a new class for losses computing, if the training goes well
-            # the following contents should be deleted
-            """
-            logits = decoder_outputs.logits if return_dict else decoder_outputs[0] 
-            loss_fct = CrossEntropyLoss() 
-            loss = loss_fct(logits.reshape(-1, self.decoder.config.vocab_size), labels.reshape(-1)) 
-            # Here we add serialized CTC loss 
-            if self.talker_ctc: 
-                hlens = encoder_attention_mask_ctc.sum(dim=1) 
-                loss_ctc = 0 
-                for i, ctc_head in enumerate(self.serialized_ctc[:self.talker_numbers]): 
-                    loss_ctc += ctc_head(sep_hidden_states[i], hlens, label_spks[i], label_spks_lengths[i]) 
-
-                loss_ctc /= self.talker_numbers 
-                loss = loss * 0.7 + loss_ctc * 0.3
-            """
-
         if not return_dict:
             if loss is not None:
                 return (loss,) + decoder_outputs + encoder_outputs
             else:
                 return decoder_outputs + encoder_outputs
 
-        return Seq2SeqLMOutput(
+        out = Seq2SeqLMOutput(
             loss=loss,
             logits=decoder_outputs.logits,
             past_key_values=decoder_outputs.past_key_values,
@@ -648,6 +647,11 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
+        ctc_per_head = getattr(self.losses, "last_ctc_per_head", None)
+        if ctc_per_head is not None:
+            out.ctc_per_head = ctc_per_head   # or out["ctc_per_head"]=...
+
+        return out
 
     def forward_ctc(
         self,
@@ -706,7 +710,7 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         # Here we add serialized CTC
         ctc_transcription_list = []
         if self.talker_ctc:
-            wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
+            # wavlm_hidden_stages, new_length = self.down_sampling(wavlm_hidden_stages)
             sep_hidden_states = self.separator(wavlm_hidden_stages)
             for i, ctc_head in enumerate(self.serialized_ctc):
                 _argmax = ctc_head.argmax(sep_hidden_states[i])
@@ -723,41 +727,71 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         argmax_tensor: torch.Tensor,
         blank_id: int = 128258,
         pad_id: int = 128257,
+        collapse_across_blanks: bool = True,
     ) -> Tuple[torch.Tensor, List[int]]:
         """
-        Process CTC argmax outputs by removing blanks and collapsing consecutive duplicates,
-        then pad sequences to a uniform length.
+        Remove CTC blanks and collapse duplicates from argmax outputs, then right-pad.
+
+        Behavior:
+          - Always removes tokens equal to `blank_id`.
+          - If `collapse_across_blanks` is True:
+              Collapses duplicates even when they are separated by blanks.
+              Example: A, blank, A  ->  A
+            If False:
+              Only collapses strictly adjacent duplicates (classic CTC collapse).
+              Example: A, A, blank, A  ->  A, blank, A
+          - Ignores any `pad_id` encountered in the argmax (if present).
+          - Pads all sequences on the right with `pad_id` to a common length.
 
         Args:
-            argmax_tensor (torch.Tensor): Shape (B, Tmax). Argmax over CTC logits per timestep.
-            blank_id (int): Token ID used for the CTC blank.
-            pad_id (int): Token ID used for right-side padding.
+            argmax_tensor: Long tensor of shape (B, T). Each row is argmax over time.
+            blank_id: CTC blank token id.
+            pad_id: Padding token id.
+            collapse_across_blanks: Whether to collapse duplicates across blanks.
 
         Returns:
-            padded_batch (torch.Tensor): Shape (B, max_seq_len) with sequences padded by `pad_id`.
-            lengths (List[int]): The true (unpadded) length of each processed sequence.
+            padded_batch: Long tensor of shape (B, Lmax) padded with `pad_id`.
+            lengths: List of true (unpadded) lengths per sequence.
         """
         batch_sequences: List[torch.Tensor] = []
         lengths: List[int] = []
 
+        # Iterate over each sequence in the batch (shape per seq: (T,))
         for seq in argmax_tensor:
-            processed_seq: List[int] = []
-            prev_token = None
+            processed: List[int] = []
+            # Tracks the last token that was actually kept (non-blank)
+            last_kept = None
 
-            # Convert to Python list for easy iteration (detach/CPU safe for general use)
+            # Convert to Python list for simplicity and device safety
             for token in seq.detach().cpu().tolist():
-                # Keep token if it's not blank and not a duplicate of the previous token
-                if token != blank_id and token != prev_token:
-                    processed_seq.append(token)
-                prev_token = token
+                # Skip any padding that leaked into argmax sequence
+                if token == pad_id:
+                    continue
 
-            batch_sequences.append(torch.tensor(processed_seq, dtype=torch.long))
-            lengths.append(len(processed_seq))
+                # Skip blanks and DO NOT update last_kept
+                if token == blank_id:
+                    continue
 
-        # Right-pad all sequences to the same length using `pad_id`
+                if collapse_across_blanks:
+                    # If the token equals the last kept non-blank token, skip it
+                    if last_kept is not None and token == last_kept:
+                        continue
+                else:
+                    # Classic CTC: only collapse strictly adjacent duplicates
+                    if processed and token == processed[-1]:
+                        continue
+
+                # Keep the token and update last_kept
+                processed.append(token)
+                last_kept = token
+
+            # Move back to the original device for padding
+            out = torch.tensor(processed, dtype=torch.long, device=argmax_tensor.device)
+            batch_sequences.append(out)
+            lengths.append(len(processed))
+
+        # Right-pad sequences to the same length using `pad_id`
         padded_batch = pad_sequence(batch_sequences, batch_first=True, padding_value=pad_id)
-
         return padded_batch, lengths
-
 
 __all__ = ["SpeechEncoderDecoderModelLlama"]

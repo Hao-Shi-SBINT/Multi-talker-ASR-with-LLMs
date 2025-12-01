@@ -505,15 +505,22 @@ class WavLMModel(WavLMPreTrainedModel):
 
         return mask, lengths
 
-    def _get_feature_vector_attention_mask_without_adapter(
+    def _get_feature_vector_attention_mask_x0(
         self, feature_vector_length: int, attention_mask: torch.LongTensor, add_adapter=None
     ):
         # Effectively attention_mask.sum(-1), but not inplace to be able to run
         # on inference mode.
         non_padded_lengths = attention_mask.cumsum(dim=-1)[:, -1]
 
-        output_lengths = self._get_feat_extract_output_lengths_without_adapter(non_padded_lengths, add_adapter=add_adapter)
-        output_lengths = output_lengths.to(torch.long)
+        def _conv_out_length(input_length, kernel_size, stride):
+            # 1D convolutional layer output length formula taken
+            # from https://pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
+            return torch.div(input_length - kernel_size, stride, rounding_mode="floor") + 1
+
+        for kernel_size, stride in zip(self.config.conv_kernel, self.config.conv_stride):
+            non_padded_lengths = _conv_out_length(non_padded_lengths, kernel_size, stride)
+
+        non_padded_lengths = non_padded_lengths.to(torch.long)
 
         batch_size = attention_mask.shape[0]
 
@@ -521,11 +528,12 @@ class WavLMModel(WavLMPreTrainedModel):
             (batch_size, feature_vector_length), dtype=attention_mask.dtype, device=attention_mask.device
         )
         # these two operations makes sure that all values before the output lengths idxs are attended to
-        attention_mask[(torch.arange(attention_mask.shape[0], device=attention_mask.device), output_lengths - 1)] = 1
+        attention_mask[(torch.arange(attention_mask.shape[0], device=attention_mask.device), non_padded_lengths - 1)] = 1
         attention_mask = attention_mask.flip([-1]).cumsum(-1).flip([-1]).bool()
         return attention_mask
 
-    def _get_feat_extract_output_lengths_without_adapter(
+
+    def _get_feat_extract_output_lengths_x4(
         self, input_lengths: Union[torch.LongTensor, int], add_adapter: Optional[bool] = None
     ):
         """
@@ -542,10 +550,29 @@ class WavLMModel(WavLMPreTrainedModel):
         for kernel_size, stride in zip(self.config.conv_kernel, self.config.conv_stride):
             input_lengths = _conv_out_length(input_lengths, kernel_size, stride)
 
-        # if add_adapter:
-        #     for _ in range(self.config.num_adapter_layers):
-        #         input_lengths = _conv_out_length(input_lengths, 1, self.config.adapter_stride)
+        if add_adapter:
+            for _ in range(self.config.num_adapter_layers-1):
+                input_lengths = _conv_out_length(input_lengths, 1, self.config.adapter_stride)
 
         return input_lengths
 
+    def _get_feature_vector_attention_mask_x4(
+        self, feature_vector_length: int, attention_mask: torch.LongTensor, add_adapter=None
+    ):
+        # Effectively attention_mask.sum(-1), but not inplace to be able to run
+        # on inference mode.
+        non_padded_lengths = attention_mask.cumsum(dim=-1)[:, -1]
+
+        output_lengths = self._get_feat_extract_output_lengths_x4(non_padded_lengths, add_adapter=add_adapter)
+        output_lengths = output_lengths.to(torch.long)
+
+        batch_size = attention_mask.shape[0]
+
+        attention_mask = torch.zeros(
+            (batch_size, feature_vector_length), dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        # these two operations makes sure that all values before the output lengths idxs are attended to
+        attention_mask[(torch.arange(attention_mask.shape[0], device=attention_mask.device), output_lengths - 1)] = 1
+        attention_mask = attention_mask.flip([-1]).cumsum(-1).flip([-1]).bool()
+        return attention_mask
 

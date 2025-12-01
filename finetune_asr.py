@@ -26,6 +26,7 @@ from utils.vectorized_dataset_utils import preprocess_and_filter
 from utils.metric_utils import compute_metrics
 from utils.processor_utils import save_and_create_processor
 from utils.training_stats_utils import build_training_kwargs
+from utils.load_sep_ctc_from_partial import load_sep_ctc_from_partial
 
 from transformers import (
     HfArgumentParser, 
@@ -56,6 +57,11 @@ def main():
 
     send_example_telemetry("run_speech_recognition_seq2seq", model_args, data_args, training_args)
 
+    if model_args.pretrain_separator_path in ("None", "none", ""):
+        pretrain_separator_path = None
+    else:
+        pretrain_separator_path = model_args.pretrain_separator_path
+
     # 2. Set logs
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -85,6 +91,9 @@ def main():
     config = load_config(model_args)
     config.talker_ctc = model_args.talker_ctc
     config.talker_numbers = model_args.talker_numbers
+    config.separator_hidden = model_args.separator_hidden
+    config.train_mode = model_args.train_mode
+    config.ctc_alpha = model_args.ctc_alpha
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models
@@ -98,7 +107,7 @@ def main():
     logger.info("Tokenizer %s", tokenizer)
 
     model = load_aed_model(model_args, config, logger)
-    model.reset_loss_mode(mode=model_args.train_mode)
+    model = load_sep_ctc_from_partial(model, pretrain_separator_path)
 
     # 6. Insert adapters into deocder and set the trainable parameters
     # If the training mode is 'ctc': do not insert adapter and we should freeze all parameters
@@ -146,7 +155,7 @@ def main():
 
     # Some Special settings for increase dataloding speed
     # training_args.remove_unused_columns = False
-    # training_args.dataloader_num_workers = 2
+    # training_args.dataloader_num_workers = 4
     # training_args.dataloader_pin_memory = True
     # training_args.group_by_length = False
 

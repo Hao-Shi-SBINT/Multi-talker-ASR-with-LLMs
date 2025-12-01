@@ -225,67 +225,151 @@ if TYPE_CHECKING:
 logger = logging.get_logger(__name__)
 
 
-def debug_heads(trainer, head_attr: str = "serialized_ctc"):
+def _locate_ctc_heads(model: nn.Module):
     """
-    返回 {head{i}_lr, head{i}_grad, head{i}_dparam, ...}
-    trainer: HF Trainer 实例（在 _maybe_log_save_evaluate 里就是 self）
-    head_attr: 模型里 CTC 头所在属性名
+    Try to find the ModuleList of CTC heads robustly across wrappers:
+    DDP/Deepspeed -> .module; PEFT -> .model / .base_model; fallback: search by name/type.
+    Returns: list of head modules or None
     """
-    model = trainer.model
-    optim = trainer.optimizer
-    logs = {}
-    if optim is None or not hasattr(model, head_attr):
-        return logs
+    def _try_chain(m):
+        if hasattr(m, "serialized_ctc"):
+            heads = getattr(m, "serialized_ctc")
+            if isinstance(heads, (nn.ModuleList, list, tuple)) and len(heads) > 0:
+                return list(heads)
+        return None
 
-    heads = getattr(model, head_attr)
-    try:
-        heads = list(heads)
-    except TypeError:
-        heads = [heads]
+    m = model
+    for _ in range(5):
+        heads = _try_chain(m)
+        if heads is not None:
+            return heads
+        if hasattr(m, "module"):
+            m = m.module
+            continue
+        if hasattr(m, "model"):
+            m = m.model
+            continue
+        if hasattr(m, "base_model"):
+            m = m.base_model
+            continue
+        break
 
-    # --- lr helper ---
-    def lr_of(p):
-        for g in optim.param_groups:
-            if any(id(p) == id(q) for q in g["params"]):
-                return g.get("lr", 0.0)
+    # Fallback: name search
+    for name, mod in model.named_modules():
+        if isinstance(mod, nn.ModuleList) and len(mod) > 0:
+            if all(hasattr(h, "ctc_loss") or ("CTC" in h.__class__.__name__) for h in mod):
+                return list(mod)
+        if hasattr(mod, "ctc_loss") and "serialized_ctc" in name:
+            return [mod]
+    return None
+
+def _global_grad_norm(parameters, norm_type: float = 2.0) -> float:
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    total = 0.0
+    for p in parameters:
+        if p is not None and p.grad is not None:
+            param_norm = p.grad.data.norm(norm_type)
+            total += float(param_norm.item() ** norm_type)
+    return float(total ** (1.0 / norm_type))
+
+def _module_grad_norm(module: nn.Module, norm_type: float = 2.0) -> float:
+    """Return Lp grad-norm for a single module without modifying grads."""
+    if module is None:
+        return float("nan")
+    params = [p for p in module.parameters() if p.grad is not None]
+    if len(params) == 0:
         return 0.0
+    if math.isinf(norm_type):
+        total = max((p.grad.detach().abs().max().item() for p in params), default=0.0)
+        return float(total)
+    device = params[0].grad.device
+    norm = torch.norm(
+        torch.stack([p.grad.detach().data.norm(norm_type).to(device) for p in params]),
+        norm_type,
+    )
+    return float(norm.item())
 
-    # --- grad / lr ---
+def _module_mean_abs_grad(module: nn.Module) -> float:
+    """Average |grad| across all params in a module."""
+    if module is None:
+        return float("nan")
+    total_abs, total_elems = 0.0, 0
+    for p in module.parameters():
+        if p.grad is not None:
+            g = p.grad.detach().abs()
+            total_abs += float(g.sum().item())
+            total_elems += g.numel()
+    return float(total_abs / max(1, total_elems))
+
+def per_head_grad_stats(model: nn.Module, prefix: str = "pre_") -> dict:
+    """Return dict of per-head grad-norm & mean|grad|; keys like 'pre_ctc0_grad_norm'."""
+    heads = _locate_ctc_heads(model)
+    stats = {}
+    if not heads:
+        return stats
     for i, head in enumerate(heads):
-        gnorm = 0.0
-        for p in head.parameters():
-            if p.grad is not None:
-                gnorm += float(p.grad.norm())
-        logs[f"head{i}_grad"] = gnorm
-        try:
-            p0 = next(head.parameters())
-            logs[f"head{i}_lr"] = float(lr_of(p0))
-        except StopIteration:
-            logs[f"head{i}_lr"] = 0.0
+        stats[f"{prefix}ctc{i}_grad_norm"] = _module_grad_norm(head, norm_type=2.0)
+        stats[f"{prefix}ctc{i}_mean_abs"]  = _module_mean_abs_grad(head)
+    return stats
 
-    # --- Δparam 快照 ---
-    if not hasattr(trainer, "_per_head_snap") or trainer._per_head_snap is None:
-        trainer._per_head_snap = {
-            f"h{i}.{n}": p.detach().clone()
-            for i, head in enumerate(heads)
-            for n, p in head.named_parameters()
-        }
-        for i in range(len(heads)):
-            logs[f"head{i}_dparam"] = 0.0
-    else:
-        snap = trainer._per_head_snap
-        for i, head in enumerate(heads):
-            dsum = 0.0
-            for n, p in head.named_parameters():
-                k = f"h{i}.{n}"
-                prev = snap.get(k)
-                if prev is not None:
-                    dsum += (p.detach() - prev).norm().item()
-                snap[k] = p.detach().clone()
-            logs[f"head{i}_dparam"] = dsum
+def _lp_grad_norm(params, norm_type: float = 2.0) -> float:
+    """Compute Lp grad-norm for a list of params without修改梯度."""
+    grads = [p.grad for p in params if (p.grad is not None)]
+    if len(grads) == 0:
+        return 0.0
+    if math.isinf(norm_type):
+        return float(max(g.abs().max().item() for g in grads))
+    device = grads[0].device
+    flat = torch.stack([g.data.norm(norm_type).to(device) for g in grads])
+    return float(torch.norm(flat, norm_type).item())
 
-    return logs
+def _ctc_head_param_groups(model, head_container_name: str = "serialized_ctc"):
+    """
+    Return [(head_name, [params...]), ...] for each CTC head.
+    默认在 model.serialized_ctc 里找（ModuleList of heads）。
+    """
+    heads = getattr(model, head_container_name, None)
+    if heads is None:
+        raise ValueError(f"model has no attribute '{head_container_name}'")
+    groups = []
+    for i, head in enumerate(heads):
+        params = [p for p in head.parameters() if p.requires_grad]
+        groups.append((f"{head_container_name}{i}", params))
+    return groups
 
+@torch.no_grad()
+def clip_grad_norm_per_head(model: nn.Module, max_norm: float = 1.0, norm_type: float = 2.0) -> dict:
+    """
+    Clip grad norm per CTC head (before global clip).
+    Uses _locate_ctc_heads(model), then for each head:
+      - compute pre_gn via clip_grad_norm_(..., inf)  (不会修改梯度)
+      - clip to max_norm
+    Returns a dict with keys:
+      "head{i}_pre_gn", "head{i}_post_gn", "head{i}_did_clip"
+    """
+    heads = _locate_ctc_heads(model)
+    if not heads or max_norm is None or max_norm <= 0:
+        return {}
+
+    out = {}
+    for i, head in enumerate(heads):
+        params = [p for p in head.parameters() if p.grad is not None]
+        if len(params) == 0:
+            out[f"head{i}_pre_gn"]   = 0.0
+            out[f"head{i}_post_gn"]  = 0.0
+            out[f"head{i}_did_clip"] = 0.0
+            continue
+
+        # pre norm (no-op)
+        pre = float(nn.utils.clip_grad_norm_(params, float("inf"), norm_type=norm_type))
+        # actual clip
+        post = float(nn.utils.clip_grad_norm_(params, max_norm, norm_type=norm_type))
+        out[f"head{i}_pre_gn"]   = pre
+        out[f"head{i}_post_gn"]  = post
+        out[f"head{i}_did_clip"] = float(pre > max_norm + 1e-8)
+
+    return out
 
 class Seq2SeqTrainer(Trainer):
     @deprecate_kwarg("tokenizer", new_name="processing_class", version="5.0.0", raise_if_both_names=True)
@@ -917,6 +1001,7 @@ class Seq2SeqTrainer(Trainer):
             max_steps,
         )
 
+
     def training_step(
         self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
     ) -> torch.Tensor:
@@ -924,18 +1009,6 @@ class Seq2SeqTrainer(Trainer):
         Perform a training step on a batch of inputs.
 
         Subclass and override to inject custom behavior.
-
-        Args:
-            model (`nn.Module`):
-                The model to train.
-            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
-                The inputs and targets of the model.
-
-                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
-                argument `labels`. Check your model's documentation for all accepted arguments.
-
-        Return:
-            `torch.Tensor`: The tensor with training loss on this batch.
         """
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
@@ -946,8 +1019,25 @@ class Seq2SeqTrainer(Trainer):
             loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
+        # ---------- forward / compute_loss (v4.47 semantics) ----------
         with self.compute_loss_context_manager():
-            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+            out = self.compute_loss(
+                model,
+                inputs,
+                return_outputs=True,
+                num_items_in_batch=num_items_in_batch,
+            )
+            if isinstance(out, tuple) and len(out) == 2:
+                loss, outputs = out
+            else:
+                loss, outputs = out, None
+
+            ctc_per_head = None
+            if outputs is not None:
+                ctc_per_head = getattr(outputs, "ctc_per_head", None)
+                if ctc_per_head is None and isinstance(outputs, dict):
+                    ctc_per_head = outputs.get("ctc_per_head", None)
+        # ------------------------------------------------------------
 
         del inputs
         if (
@@ -968,55 +1058,92 @@ class Seq2SeqTrainer(Trainer):
                 torch.cuda.empty_cache()
 
         kwargs = {}
-
-        # For LOMO optimizers you need to explicitly use the learnign rate
         if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
             kwargs["learning_rate"] = self._get_learning_rate()
 
         if self.args.n_gpu > 1:
-            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+            loss = loss.mean()
 
         if self.use_apex:
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
-            """
-            loss_att = losses.get('attention')
-            loss_ctc_list = losses.get('ctc_losses')
+            # ---------------- PCGrad (only when multi-head CTC exists) ----------------
+            proj_shared = None
+            shared_params = None
 
-            if loss_att is None:
-                alpha = 0.0
-                beta = 1.0
-            elif not loss_ctc_list:
-                alpha = 1.0
-                beta = 0.0
-            else:
-                alpha = 0.7  # weights for attention loss
-                beta = 0.3   # weights for ctc losses
+            if (
+                ctc_per_head is not None
+                and isinstance(ctc_per_head, (list, tuple))
+                and len(ctc_per_head) >= 2
+            ):
+                # ---------------- PCGrad: compute projected shared grads BEFORE backward ----------------
+                shared_params = []
+                if hasattr(model, "encoder"):
+                    shared_params += list(model.encoder.parameters())
+                if hasattr(model, "separator"):
+                    shared_params += list(model.separator.parameters())
 
-            if loss_att is not None:
-                self.accelerator.backward(loss_att * alpha)
+                shared_params = [p for p in shared_params if p.requires_grad]
 
-            if loss_ctc_list:
-                per_head_weight = beta / len(loss_ctc_list)
-                for ctc_loss in loss_ctc_list:
-                    self.accelerator.backward(ctc_loss * per_head_weight, retain_graph=True)
+                proj_shared = None
+                if (
+                    ctc_per_head is not None
+                    and isinstance(ctc_per_head, (list, tuple))
+                    and len(ctc_per_head) >= 2
+                    and len(shared_params) > 0
+                ):
+                    scale = 1.0 / float(self.args.gradient_accumulation_steps)
 
-            total_loss = 0.0
-            if loss_att is not None:
-                total_loss += loss_att * alpha
-            if loss_ctc_list:
-                total_loss += sum(loss_ctc_list) * (beta / len(loss_ctc_list)) * len(loss_ctc_list)
+                    grads = []
+                    active = []
+                    for Li in ctc_per_head:
+                        Li_use = Li.mean() if Li.dim() > 0 else Li
+                        if not Li_use.requires_grad:
+                            continue
+                        Li_use = Li_use * scale
 
-            if num_items_in_batch is None:
-                return total_loss.detach() / self.args.gradient_accumulation_steps
-            return total_loss.detach()
-            """
+                        gi = torch.autograd.grad(
+                            Li_use, shared_params,
+                            retain_graph=True,
+                            allow_unused=True
+                        )
+                        gi = [g if g is not None else torch.zeros_like(p)
+                              for g, p in zip(gi, shared_params)]
+                        grads.append(gi)
+                        active.append(True)
+
+                    K = len(grads)
+                    if K >= 2:
+                        for i in range(K):
+                            for j in range(K):
+                                if i == j:
+                                    continue
+                                dot = sum((gi * gj).sum() for gi, gj in zip(grads[i], grads[j]))
+                                if dot < 0:
+                                    norm2 = sum((gj * gj).sum() for gj in grads[j]) + 1e-12
+                                    alpha = dot / norm2
+                                    grads[i] = [gi - alpha * gj for gi, gj in zip(grads[i], grads[j])]
+
+                        proj_shared = [
+                            sum(grads[i][k] for i in range(K))
+                            for k in range(len(shared_params))
+                        ]
+            # ---------------------------------------------------------------------------------------
+
             self.accelerator.backward(loss, **kwargs)
-            # Finally we need to normalize the loss for reporting
-            if num_items_in_batch is None:
-                return loss.detach() / self.args.gradient_accumulation_steps
-            return loss.detach()
+
+            # ---------------- overwrite shared grads AFTER backward ----------------
+            if proj_shared is not None:
+                with torch.no_grad():
+                    for p, g in zip(shared_params, proj_shared):
+                        p.grad = g.detach()
+            # ----------------------------------------------------------------------
+
+        # Finally we need to normalize the loss for reporting (keep v4.47 behavior)
+        if num_items_in_batch is None:
+            return loss.detach() / self.args.gradient_accumulation_steps
+        return loss.detach()
 
 
     def _inner_training_loop(
@@ -1390,19 +1517,40 @@ class Seq2SeqTrainer(Trainer):
                     self.current_flos += float(self.floating_point_ops(inputs))
 
                     if do_sync_step:
-
-                        # if self.state.is_world_process_zero:
-                        #     pre_dbg = debug_heads(self, head_attr="serialized_ctc")
-                        #     pre_dbg = {f"pre_{k}": v for k, v in pre_dbg.items()}
-                        #     self.log(pre_dbg, start_time)
-
                         # Since we perform prefetching, we need to manually set sync_gradients to True
                         self.accelerator.gradient_state._set_sync_gradients(True)
 
+
+                        """
+                        #TODO: Better way
+                        # —— 在全局裁剪之前：记录每个 CTC 头的梯度范数（可选）
+                        if self.state.is_world_process_zero and (self.state.global_step % 10 == 0):
+                            try:
+                                # 如果你已把这些 helper 放进了文件里
+                                stats_pre = per_head_grad_stats(model, prefix="pre_")
+                            except NameError:
+                                # 兜底：就算没有 helper，也记录不了解耦的 per-head 也没关系
+                                stats_pre = {}
+                            if stats_pre:
+                                logger.info("[Grad Norm Stats: Pre. Clip]")
+                                for k, v in stats_pre.items():
+                                    logger.info("%s: %.6f", k, v)
+
+                        #TODO: Check per-head grad_norm
+                        # ===== (A) 先对每个 CTC 头做“按头剪裁” =====
+                        head_max_gn = float(getattr(args, "head_max_grad_norm", args.max_grad_norm or 0.0) or 0.0)
+                        if head_max_gn and head_max_gn > 0.0:
+                            try:
+                                per_head_stats = clip_grad_norm_per_head(model, max_norm=head_max_gn, norm_type=2.0)
+                            except Exception as e:
+                                if self.state.is_world_process_zero:
+                                    logger.info(f"[warn] per-head clipping failed: {e}")
+                        """
+
+                        # TODO: original codes
                         # Gradient clipping
                         if args.max_grad_norm is not None and args.max_grad_norm > 0:
                             # deepspeed does its own clipping
-
                             if is_sagemaker_mp_enabled() and args.fp16:
                                 _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
                             elif self.use_apex:
@@ -1412,6 +1560,7 @@ class Seq2SeqTrainer(Trainer):
                                     args.max_grad_norm,
                                 )
                             else:
+
                                 _grad_norm = self.accelerator.clip_grad_norm_(
                                     model.parameters(),
                                     args.max_grad_norm,
@@ -1428,11 +1577,27 @@ class Seq2SeqTrainer(Trainer):
                             else:
                                 grad_norm = _grad_norm
 
+                        """
+                        #TODO: after clip
+                        did_clip = float(_grad_norm) > float(args.max_grad_norm) + 1e-8
+                        # —— 在全局裁剪之后：再次记录每个 CTC 头的梯度范数（可选）
+                        if self.state.is_world_process_zero and (self.state.global_step % 10 == 0): 
+                            try:
+                                stats_post = per_head_grad_stats(model, prefix="post_")
+                            except NameError:
+                                stats_post = {}
+                            log_dict = { 
+                                "gn_total_pre": float(_grad_norm),      # 裁剪前的全局范数（Accelerate 返回值）
+                                "max_grad_norm": float(args.max_grad_norm),
+                                "did_clip": float(did_clip),               # 是否发生裁剪
+                            }   
+                            log_dict.update({f"post_{k}": float(v) for k, v in stats_post.items()})
+                            logger.info("[Grad Norm Stats: Post Clip]")
+                            for k, v in stats_post.items():
+                                logger.info("%s: %.6f", k, v)
+                        """
+
                         self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
-                        # if self.state.is_world_process_zero:
-                        #     pre_dbg = debug_heads(self, head_attr="serialized_ctc")
-                        #     pre_dbg = {f"pre_{k}": v for k, v in pre_dbg.items()}
-                        #     self.log(pre_dbg, start_time)
 
                         self.optimizer.step()
 

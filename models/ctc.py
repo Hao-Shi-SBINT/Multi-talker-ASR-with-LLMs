@@ -45,6 +45,7 @@ class CTC(torch.nn.Module):
             reduction="none", zero_infinity=zero_infinity, blank=odim-1
         )
 
+        # self.reduce = False
         self.reduce = reduce
 
     def loss_fn(self, th_pred, th_target, th_ilen, th_olen) -> torch.Tensor:

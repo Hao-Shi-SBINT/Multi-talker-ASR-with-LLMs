@@ -1,0 +1,224 @@
+# File: losses.py
+import torch
+import torch.nn as nn
+
+def build_perm(N: int, mode: str | None, step: int = 0, rotate_every: int = 100):
+    """
+    Return a permutation list of [0..N-1].
+    mode:
+      - None       : identity
+      - "swap01"   : for N>=2, swap 0<->1
+      - "reverse"  : reverse order, e.g., [1,0] or [2,1,0]
+      - "rotate"   : cyclic rotate by k=(step//rotate_every)%N (good for N=3)
+    """
+    assert N >= 1
+    if mode is None or N == 1:
+        return list(range(N))
+    if mode == "swap01":
+        assert N >= 2
+        p = list(range(N)); p[0], p[1] = p[1], p[0]; return p
+    if mode == "reverse":
+        return list(reversed(range(N)))
+    if mode == "rotate":
+        k = (step // max(1, rotate_every)) % N
+        base = list(range(N))
+        return base[k:] + base[:k]
+    raise ValueError(f"Unknown mode: {mode}")
+
+class HybridLoss(nn.Module):
+    """
+    A flexible loss module that can compute:
+    - Attention loss only
+    - Serialized CTC loss only
+    - Hybrid loss (weighted combination of attention + CTC)
+    
+    Args:
+        alpha (float): Weight for attention loss when mode='hybrid'.
+        mode (str): 'attention' | 'ctc' | 'hybrid'.
+        blank_id (int|None): If set, enables optional blank-range checks for CTC targets.
+        enable_blank_check (bool): Do lightweight blank-range assertions during training.
+        log_every_steps (int): If >0, push per-head debug scalars into self.log_dict every N steps.
+        rotate_every (int): Step window for "rotate" perm mode.
+    """
+    def __init__(self, alpha: float = 0.7, mode: str = 'hybrid',
+                 blank_id: int | None = None,
+                 enable_blank_check: bool = False,
+                 log_every_steps: int = 0,
+                 rotate_every: int = 100):
+        super().__init__()
+        assert mode in ('attention', 'ctc', 'hybrid'), "mode must be 'attention', 'ctc', or 'hybrid'"
+        self.alpha = alpha
+        self.mode = mode
+        self.ce_loss = nn.CrossEntropyLoss()
+        # Permutation controls (set self.perm_mode from outside if you want A/B)
+        self.perm_mode = None   # None | "swap01" | "reverse" | "rotate"
+        self.rotate_every = rotate_every
+        # Debug / checks
+        self.blank_id = blank_id
+        self.enable_blank_check = enable_blank_check
+        self.log_every_steps = int(log_every_steps)
+
+        # a place for trainer to read from (optional)
+        self.log_dict = {}
+
+        # --- Anti-bias (AdaLoss-per-head) hyperparams & state ---
+        self.ctc_head_beta   = 0.98   # EMA decay, 0.95~0.995 常用
+        self.ctc_head_boost  = 0.30   # 反偏科强度，0.2~0.5
+        self.ctc_min_w       = 0.50   # 每个 head 权重下限
+        self.ctc_max_w       = 2.00   # 每个 head 权重上限
+        self.ctc_head_ema    = None   # 运行时缓存在这里（按 head 的 EMA loss）
+
+    def forward(
+        self,
+        decoder_outputs=None,
+        labels=None,
+        decoder_vocab_size=None,
+        talker_ctc=None,
+        sep_hidden_states=None,
+        route_probs=None,
+        attn_mask=None,
+        encoder_attention_mask_ctc=None,
+        label_spks=None,
+        label_spks_lengths=None,
+        talker_numbers=1,
+        return_dict=True,
+    ):
+        """
+        Args:
+            decoder_outputs: decoder outputs for attention CE.
+            labels: attention labels (will be flattened).
+            decoder_vocab_size: CE vocab size.
+            talker_ctc: List[nn.Module] CTC heads.
+            sep_hidden_states: List[Tensor] per-head acoustic features (B,T,H).
+            encoder_attention_mask_ctc: (B,T) -> lengths for CTC input.
+            label_spks: List[Tensor] per-head targets (B,Lmax_i).
+            label_spks_lengths: List[Tensor] per-head target lengths (B,).
+            talker_numbers: N heads.
+            return_dict: whether decoder_outputs is dict-like.
+        """
+        loss_attn = 0.
+        loss_ctc = 0.
+
+        # -----------------------------
+        # Attention loss (if needed)
+        # -----------------------------
+        if self.mode in ('attention', 'hybrid'):
+            if decoder_outputs is None or labels is None or decoder_vocab_size is None:
+                raise ValueError("decoder_outputs, labels, decoder_vocab_size must be provided for attention loss")
+            logits = decoder_outputs.logits if return_dict else decoder_outputs[0]
+            loss_attn = self.ce_loss(
+                logits.reshape(-1, decoder_vocab_size),
+                labels.reshape(-1)
+            )
+
+        # -----------------------------
+        # CTC loss (if needed)
+        # -----------------------------
+        ctc_losses_record = []
+        if self.mode in ('ctc', 'hybrid'):
+            if (talker_ctc is None or sep_hidden_states is None or encoder_attention_mask_ctc is None
+                or label_spks is None or label_spks_lengths is None):
+                raise ValueError("CTC related inputs must be provided for CTC loss")
+
+            N = int(talker_numbers)
+            assert len(talker_ctc) == N, f"len(talker_ctc)={len(talker_ctc)} != talker_numbers={N}"
+            assert len(sep_hidden_states) == len(label_spks) == len(label_spks_lengths) == N, \
+                "Mismatch among heads/labels/lengths"
+
+            # (B,) encoder time lengths from attention mask
+            hlens = encoder_attention_mask_ctc.sum(dim=1).long()
+            B = hlens.size(0)
+
+            # Strict sanity checks for each head
+            for i in range(N):
+                x, y, ylen = sep_hidden_states[i], label_spks[i], label_spks_lengths[i]
+                assert x.size(0) == y.size(0) == ylen.size(0) == B, f"batch dim mismatch @head {i}"
+                assert ylen.dtype in (torch.int32, torch.int64), f"length dtype must be int @head {i}"
+
+            # Decide perm (disable during eval/inference)
+            step = int(getattr(self, "global_step", 0))
+            effective_perm_mode = (self.perm_mode if self.training else None)
+            perm = build_perm(N, effective_perm_mode, step=step, rotate_every=self.rotate_every)
+
+            # Apply the SAME permutation to features and labels
+            sep_hidden_states = [sep_hidden_states[j] for j in perm]
+            label_spks         = [label_spks[j]         for j in perm]
+            label_spks_lengths = [label_spks_lengths[j] for j in perm]
+
+            # Optional light checks on CTC targets (blank range)
+            if self.enable_blank_check and (self.blank_id is not None) and (step % max(1, self.log_every_steps or 1000) == 0):
+                with torch.no_grad():
+                    for i in range(N):
+                        if label_spks_lengths[i].sum().item() > 0:
+                            max_id = int(label_spks[i].max().item())
+                            assert max_id < self.blank_id, \
+                                f"[CTC blank check] head {i}: target id {max_id} >= blank_id {self.blank_id}"
+
+            # Compute per-head CTC in fp32 and normalize by total target tokens
+            with torch.cuda.amp.autocast(enabled=False):
+                for i, ctc_head in enumerate(talker_ctc):
+                    raw_loss = ctc_head(
+                        sep_hidden_states[i].float(),   # (B, T, H)
+                        hlens,                          # (B,)
+                        label_spks[i],                  # (B, Lmax_i)
+                        label_spks_lengths[i]           # (B,)
+                    )
+                    # Your CTC uses reduction="none" → typically per-utt scalar per sample
+                    if raw_loss.dim() > 0:
+                        raw_loss = raw_loss.sum()
+                    # tokens = label_spks_lengths[i].sum().clamp_min(1)
+                    # loss_i = raw_loss / tokens        # ★ token-level normalization
+                    ctc_losses_record.append(raw_loss)
+
+            loss_ctc = sum(ctc_losses_record) / max(1, N)
+
+            if (route_probs is not None):
+                # step（全局步数），从 Trainer 注入到 self.losses.global_step 或者模型里维护
+                step = int(getattr(self, "global_step", 0))
+                # 计算每个头在 (B,T) 上的平均使用率 p_bar: (N,)
+                if attn_mask is not None:
+                    valid = attn_mask.float().unsqueeze(-1)                  # (B,T,1)
+                    denom = valid.sum(dim=(0, 1)).clamp_min(1e-8)            # 标量（广播）
+                    p_bar = (route_probs * valid).sum(dim=(0, 1)) / denom    # (N,)
+                else:
+                    p_bar = route_probs.mean(dim=(0, 1))                     # (N,)
+
+                balance_loss = ((p_bar - 1.0 / N) ** 2).sum()
+
+                # 只在训练跑到一定步数后逐步加权（防止早期干扰）
+                lambda0, lambda_max = 5e-4, 2e-3
+                warm_steps = 300
+                coef = 0.0 if step < warm_steps else min(lambda_max, lambda0 * (step - warm_steps + 1) / 500.0)
+
+                loss_ctc = loss_ctc + coef * balance_loss
+
+                # （可选）记录一下监控值，方便对齐/诊断
+                if hasattr(self, "log_every_steps") and self.log_every_steps:
+                    if step % self.log_every_steps == 0:
+                        if not hasattr(self, "log_dict"): self.log_dict = {}
+                        self.log_dict["route_p_bar_min"] = float(p_bar.min().detach().cpu())
+                        self.log_dict["route_p_bar_max"] = float(p_bar.max().detach().cpu())
+                        self.log_dict["balance_coef"]    = float(coef)
+            
+
+            # Lightweight debug signals (per-head)
+            if self.log_every_steps > 0 and (step % self.log_every_steps == 0):
+                for i in range(N):
+                    with torch.no_grad():
+                        self.log_dict[f"ctc{i}_loss"]      = float(ctc_losses_record[i].detach().cpu())
+                        self.log_dict[f"ctc{i}_toks_sum"]  = int(label_spks_lengths[i].sum().item())
+                        self.log_dict[f"ctc{i}_nonempty"]  = float((label_spks_lengths[i] > 0).float().mean().item())
+                        self.log_dict[f"ctc{i}_act_rms"]   = float(sep_hidden_states[i].float().pow(2).mean().sqrt().item())
+                self.log_dict["perm"] = perm
+
+        # -----------------------------
+        # Combine losses based on mode
+        # -----------------------------
+        print(ctc_losses_record)
+        if self.mode == 'attention':
+            return loss_attn
+        elif self.mode == 'ctc':
+            return loss_ctc
+        else:  # hybrid
+            return self.alpha * loss_attn + (1 - self.alpha) * loss_ctc
+

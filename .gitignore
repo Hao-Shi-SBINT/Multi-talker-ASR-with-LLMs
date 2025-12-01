@@ -3,5 +3,7 @@ __pycache__
 datasets
 dump
 exp
+exp_ctc_finished
+exp_separator
 slurm-*.out
 exp_finished

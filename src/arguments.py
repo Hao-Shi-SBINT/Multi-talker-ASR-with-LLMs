@@ -38,6 +38,10 @@ class ModelArguments:
         default=None,
         metadata={"help": "Where to store the pretrained models downloaded from huggingface.co"},
     )
+    pretrain_separator_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path of pre-trained separator and serilized CTCs"},
+    )
     use_fast_tokenizer: bool = field(
         default=True,
         metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
@@ -53,6 +57,10 @@ class ModelArguments:
     talker_numbers: int = field(
         default=2,
         metadata={"help": "The number of talker."},
+    )
+    separator_hidden: int = field(
+        default=896,
+        metadata={"help": "The number of hidden nodes of separator."},
     )
     token: str = field(
         default=None,
@@ -85,6 +93,10 @@ class ModelArguments:
     train_mode: str = field(
         default="attention",
         metadata={"help": "The mode for training: only ctc / only attention / attention-ctc hybrid: please set is as one of ctc/attention/hybrid."},
+    )
+    ctc_alpha: float = field(
+        default=0.7,
+        metadata={"help": "CTC loss weight (0–1)."},
     )
     ctc_decoding: bool = field(
         default=False, metadata={"help": "Whether using CTC for decoding."}
