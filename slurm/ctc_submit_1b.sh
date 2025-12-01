@@ -33,7 +33,6 @@ tn=2
 
 corp=libri2mix_noisy
 
-:<<COMMENT
 dec=Llama-3.2-1B
 ins=false
 pmp=exp_finished/wavlm-Llama-3.2-1B-encoder_unfreeze-decoder_freeze-adater_decoder-libri2mix_noisy
@@ -45,7 +44,6 @@ sbatch \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
   partial_others_unfreeze="$partial_others_unfreeze"
-COMMENT
 
 dec=Llama-3.2-1B-Instruct
 ins=true
@@ -61,7 +59,6 @@ sbatch \
   partial_others_unfreeze="$partial_others_unfreeze"
 
 corp=libri2mix_clean
-:<<COMMENT
 dec=Llama-3.2-1B
 ins=false
 pmp=exp_finished/wavlm-Llama-3.2-1B-encoder_unfreeze-decoder_freeze-adater_decoder-libri2mix_clean
@@ -73,7 +70,6 @@ sbatch \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
   partial_others_unfreeze="$partial_others_unfreeze"
-COMMENT
 
 
 dec=Llama-3.2-1B-Instruct
@@ -94,7 +90,6 @@ tn=3
 
 dec=Llama-3.2-1B
 corp=libri3mix_noisy
-:<<COMMENT
 ins=false
 pmp=exp_finished/wavlm-Llama-3.2-1B-encoder_unfreeze-decoder_freeze-adater_decoder-libri3mix_noisy
 pt_separator=exp_separator/libri3mix_noisy_llama-ins-1b.pt
@@ -106,7 +101,6 @@ sbatch \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
   partial_others_unfreeze="$partial_others_unfreeze"
-COMMENT
 
 dec=Llama-3.2-1B-Instruct
 ins=true
@@ -124,7 +118,6 @@ sbatch \
 
 dec=Llama-3.2-1B
 corp=libri3mix_clean
-:<<COMMENT
 ins=false
 pmp=exp_finished/wavlm-Llama-3.2-1B-encoder_unfreeze-decoder_freeze-adater_decoder-libri3mix_clean
 pt_separator=exp_separator/libri3mix_clean_llama-ins-1b.pt
@@ -136,7 +129,6 @@ sbatch \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
   partial_others_unfreeze="$partial_others_unfreeze"
-COMMENT
 
 dec=Llama-3.2-1B-Instruct
 ins=true
