@@ -287,9 +287,10 @@ class HybridLoss(nn.Module):
                         else:
                             per_head_mean.append(Li.detach())
 
-                     print("[CTC per-head mean]:", [x.item() for x in per_head_mean])
+                     # print("[CTC per-head mean]:", [x.item() for x in per_head_mean])
                 # -----------------------------------------------------------
 
+            """
             # -------- debug: grad conflict on shared params --------
             if shared_params is not None and torch.is_grad_enabled():
                 shared_params = [p for p in shared_params if p.requires_grad]
@@ -334,6 +335,7 @@ class HybridLoss(nn.Module):
                         print("conflict_rate:", conflict_cnt / max(1, total_cnt))
                         print("worst_conflict_pair:", min_pair, "cos=", min_cos)
                 # --------------------------------------
+            """
 
             # -----------------------------
             # Combine (return scalar!)
