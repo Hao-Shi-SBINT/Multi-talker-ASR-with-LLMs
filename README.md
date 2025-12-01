@@ -6,11 +6,11 @@ The implementation is based on the following papers:
 
 - Hao Shi, Yusuke Fujita, Tomoya Mizumoto, Lianbo Liu, Atsushi Kojima, and Yui Sudo,  
   **“Serialized Output Prompting for Large Language Model-based Multi-Talker Speech Recognition”**,  
-  in Proc. IEEE ASRU, 2025 (Accepted). \[PDF\] \[BibTeX\]
+  in Proc. IEEE ASRU, 2025 (Accepted).
 
 - Hao Shi, Yuan Gao, Zhaoheng Ni, and Tatsuya Kawahara,  
   **“Serialized Speech Information Guidence with Overlapped Encoding Separation for Multi-Speaker Automatic Speech Recognition”**,  
-  in Proc. IEEE SLT, 2024, pp. 198–204. \[PDF\] \[BibTeX\]
+  in Proc. IEEE SLT, 2024, pp. 198–204.
 
 If you use this repository in your research, please consider citing these works.
 
