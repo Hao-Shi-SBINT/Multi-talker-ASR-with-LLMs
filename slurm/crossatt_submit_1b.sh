@@ -37,7 +37,7 @@ corp=libri2mix_noisy
 
 dec=Llama-3.2-1B
 ins=false
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri2mix_noisy
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri2mix_noisy
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -49,7 +49,7 @@ sbatch \
 
 dec=Llama-3.2-1B-Instruct
 ins=true
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri2mix_noisy
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri2mix_noisy
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -62,7 +62,7 @@ sbatch \
 corp=libri2mix_clean
 dec=Llama-3.2-1B
 ins=false
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri2mix_clean
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri2mix_clean
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -74,7 +74,7 @@ sbatch \
 
 dec=Llama-3.2-1B-Instruct
 ins=true
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri2mix_clean
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri2mix_clean
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -89,7 +89,7 @@ tn=3
 dec=Llama-3.2-1B
 corp=libri3mix_noisy
 ins=false
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri3mix_noisy
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri3mix_noisy
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -101,7 +101,7 @@ sbatch \
 
 dec=Llama-3.2-1B-Instruct
 ins=true
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri3mix_noisy
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri3mix_noisy
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -114,7 +114,7 @@ sbatch \
 dec=Llama-3.2-1B
 corp=libri3mix_clean
 ins=false
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri3mix_clean
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri3mix_clean
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \
@@ -126,7 +126,7 @@ sbatch \
 
 dec=Llama-3.2-1B-Instruct
 ins=true
-pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri3mix_clean
+pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri3mix_clean
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="${dec}-${corp}-${ins}" \

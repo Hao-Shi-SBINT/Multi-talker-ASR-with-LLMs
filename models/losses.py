@@ -202,8 +202,7 @@ class HybridLoss(nn.Module):
             if decoder_outputs is None or labels is None or decoder_vocab_size is None:
                 raise ValueError("decoder_outputs, labels, decoder_vocab_size must be provided for attention loss")
             logits = decoder_outputs.logits if return_dict else decoder_outputs[0]
-            loss_attn = self.ce_loss(logits.reshape(-1, decoder_vocab_size),
-                                     labels.reshape(-1))
+            loss_attn = self.ce_loss(logits.reshape(-1, decoder_vocab_size), labels.reshape(-1))
 
         # -----------------------------
         # CTC loss (if needed)
@@ -337,18 +336,19 @@ class HybridLoss(nn.Module):
                 # --------------------------------------
             """
 
-            # -----------------------------
-            # Combine (return scalar!)
-            # -----------------------------
-            if self.mode == 'attention':
-                total_loss = loss_attn
-                self.last_ctc_per_head = None
-            elif self.mode == 'ctc':
-                total_loss = loss_ctc
-                self.last_ctc_per_head = ctc_per_head
-            else:
-                total_loss = self.alpha * loss_attn + (1.0 - self.alpha) * loss_ctc
-                self.last_ctc_per_head = ctc_per_head
+        # -----------------------------
+        # Combine (return scalar!)
+        # -----------------------------
+        if self.mode == 'attention':
+            total_loss = loss_attn
+            self.last_ctc_per_head = None
+        elif self.mode == 'ctc':
+            total_loss = loss_ctc
+            print(ctc_per_head)
+            self.last_ctc_per_head = ctc_per_head
+        else:
+            total_loss = self.alpha * loss_attn + (1.0 - self.alpha) * loss_ctc
+            self.last_ctc_per_head = ctc_per_head
 
-            return total_loss
+        return total_loss
 

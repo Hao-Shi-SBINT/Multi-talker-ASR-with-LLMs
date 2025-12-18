@@ -3,9 +3,12 @@ __pycache__
 datasets
 dump
 exp
-exp_ctc_finished
-exp_separator
 slurm-*.out
 exp_finished
 slurm/logs
 *.log
+exp_crossatt_finished
+exp_ctc_finished
+exp_ctcrepair_finished
+exp_separator
+exp_sot_finished

@@ -188,3 +188,7 @@ class CTC(torch.nn.Module):
             torch.Tensor: argmax applied 2d tensor (B, Tmax)
         """
         return torch.argmax(self.ctc_lo(hs_pad), dim=2)
+
+    def logits(self, hs_pad):
+        return self.ctc_lo(hs_pad)
+

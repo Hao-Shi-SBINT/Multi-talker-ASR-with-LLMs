@@ -90,10 +90,15 @@ def main():
     # 5. Load pretrained model, tokenizer, and feature extractor
     config = load_config(model_args)
     config.talker_ctc = model_args.talker_ctc
+    config.talker_ctc_refine = model_args.talker_ctc_refine
     config.talker_numbers = model_args.talker_numbers
     config.separator_hidden = model_args.separator_hidden
     config.train_mode = model_args.train_mode
     config.ctc_alpha = model_args.ctc_alpha
+    config.ctc_bridge = model_args.ctc_bridge
+    config.ctc_bridge_type = model_args.ctc_bridge_type
+    config.decoder_cross_attention = model_args.decoder_cross_attention
+    config.decoder_cross_attention_type = model_args.decoder_cross_attention_type
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models
@@ -107,7 +112,8 @@ def main():
     logger.info("Tokenizer %s", tokenizer)
 
     model = load_aed_model(model_args, config, logger)
-    model = load_sep_ctc_from_partial(model, pretrain_separator_path)
+    if(pretrain_separator_path):
+        model = load_sep_ctc_from_partial(model, pretrain_separator_path)
 
     # 6. Insert adapters into deocder and set the trainable parameters
     # If the training mode is 'ctc': do not insert adapter and we should freeze all parameters

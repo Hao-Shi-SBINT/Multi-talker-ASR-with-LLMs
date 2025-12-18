@@ -89,6 +89,11 @@ def main():
     config = load_config(model_args)
     config.talker_ctc = model_args.talker_ctc
     config.talker_numbers = model_args.talker_numbers
+    config.separator_hidden = model_args.separator_hidden
+    config.train_mode = model_args.train_mode
+    config.ctc_alpha = model_args.ctc_alpha
+    config.ctc_bridge = model_args.ctc_bridge
+    config.ctc_bridge_type = model_args.ctc_bridge_type
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models

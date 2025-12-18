@@ -27,9 +27,12 @@ for arg in "$@"; do
     adapter_only_decoder=*) adapter_only_decoder="${arg#*=}" ;;
     instruct=*)             instruct="${arg#*=}" ;;
     talker_ctc=*)           talker_ctc="${arg#*=}" ;;
+    talker_ctc_refine=*)    talker_ctc_refine="${arg#*=}" ;;
     talker_numbers=*)       talker_numbers="${arg#*=}" ;;
     separator_hidden=*)     separator_hidden="${arg#*=}" ;;
     output_dir=*)           output_dir="${arg#*=}" ;;
+    decoder_cross_attention=*)        decoder_cross_attention="${arg#*=}" ;;
+    decoder_cross_attention_type=*)   decoder_cross_attention_type="${arg#*=}" ;;
     per_device_train_batch_size=*)   per_device_train_batch_size="${arg#*=}" ;;
     per_device_eval_batch_size=*)    per_device_eval_batch_size="${arg#*=}" ;;
     partial_encoder_unfreeze=*)      partial_encoder_unfreeze="${arg#*=}" ;;
@@ -42,6 +45,8 @@ for arg in "$@"; do
     eval_steps=*)           eval_steps="${arg#*=}" ;;
     virtual_env=*)          virtual_env="${arg#*=}" ;;
     cache_dir=*)            cache_dir="${arg#*=}" ;;
+    ctc_bridge=*)           ctc_bridge="${arg#*=}" ;;
+    ctc_bridge_type=*)      ctc_bridge_type="${arg#*=}" ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
   esac
 done
@@ -60,6 +65,7 @@ echo "[run] instruct=$instruct"
 echo "[run] per_device_train_batch_size=$per_device_train_batch_size"
 echo "[run] per_device_eval_batch_size=$per_device_eval_batch_size"
 echo "[run] talker_ctc=$talker_ctc"
+echo "[run] talker_ctc_refine=$talker_ctc_refine"
 echo "[run] talker_numbers=$talker_numbers"
 echo "[run] separator_hidden=$separator_hidden"
 echo "[run] partial_encoder_unfreeze=$partial_encoder_unfreeze"
@@ -71,6 +77,10 @@ echo "[run] cache_dir=$cache_dir"
 seed="${seed-42}"
 echo "[run] seed=$seed"
 echo "[run] pretrain_separator_path=$pretrain_separator_path"
+echo "[run] ctc_bridge=$ctc_bridge"
+echo "[run] ctc_bridge_type=$ctc_bridge_type"
+echo "[run] decoder_cross_attention=$decoder_cross_attention"
+echo "[run] decoder_cross_attention_type=$decoder_cross_attention_type"
 
 # output_dir=${output_dir}/${encoder}-${decoder}
 output_dir=${output_dir}/mode_${train_mode}-${encoder}-${decoder}
@@ -87,11 +97,20 @@ else
 fi
 if [ "${adapter_only_decoder}" = "true" ]; then
     output_dir="${output_dir}-adater_decoder"
-else
-    output_dir="${output_dir}-adater_encoder_decoder"
+# else
+#     output_dir="${output_dir}-adater_encoder_decoder"
 fi
 if [ "${talker_ctc}" = "true" ]; then
     output_dir="${output_dir}-ctc"
+fi
+if [ "${talker_ctc_refine}" = "true" ]; then
+   output_dir="${output_dir}-refine"
+fi
+if [ "${decoder_cross_attention}" = "true" ]; then
+   output_dir="${output_dir}-cross_attention_${decoder_cross_attention_type}"
+fi
+if [ "${ctc_bridge}" = "true" ]; then
+    output_dir="${output_dir}-${ctc_bridge_type}"
 fi
 output_dir=${output_dir}-${corpus}
 
@@ -174,6 +193,10 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
 	--logging_steps="10" \
 	--save_total_limit="5" \
 	--seed="${seed}" \
+	--ctc_bridge="${ctc_bridge}" \
+	--ctc_bridge_type="${ctc_bridge_type}" \
+	--decoder_cross_attention="${decoder_cross_attention}" \
+	--decoder_cross_attention_type="${decoder_cross_attention_type}" \
 	--freeze_feature_encoder true \
 	--freeze_encoder ${encoder_freeze} \
 	--freeze_decoder ${decoder_freeze} \
@@ -183,6 +206,7 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
 	--gradient_checkpointing \
 	"${PRECISION_FLAGS[@]}" \
 	--talker_ctc=${talker_ctc} \
+	--talker_ctc_refine=${talker_ctc_refine} \
 	--talker_numbers=${talker_numbers} \
 	--separator_hidden=${separator_hidden} \
 	--group_by_length \
@@ -231,6 +255,10 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
             --logging_steps="10" \
             --save_total_limit="5" \
             --freeze_feature_encoder true \
+            --ctc_bridge="${ctc_bridge}" \
+            --ctc_bridge_type="${ctc_bridge_type}" \
+            --decoder_cross_attention="${decoder_cross_attention}" \
+            --decoder_cross_attention_type="${decoder_cross_attention_type}" \
             --freeze_encoder ${encoder_freeze} \
             --freeze_decoder ${decoder_freeze} \
             --partial_encoder_unfreeze="${partial_encoder_unfreeze}" \
@@ -242,6 +270,7 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
             --predict_with_generate \
             --talker_ctc=${talker_ctc} \
             --talker_numbers=${talker_numbers} \
+            --separator_hidden=${separator_hidden} \
             --do_train false \
             --do_eval true \
             --do_lower_case
@@ -303,6 +332,9 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
             --predict_with_generate \
             --talker_ctc=${talker_ctc} \
             --talker_numbers=${talker_numbers} \
+            --separator_hidden=${separator_hidden} \
+            --ctc_bridge="${ctc_bridge}" \
+            --ctc_bridge_type="${ctc_bridge_type}" \
             --do_train false \
             --do_eval true \
             --do_lower_case

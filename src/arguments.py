@@ -54,6 +54,10 @@ class ModelArguments:
         default=False,
         metadata={"help": "Whether to use ctc after speech encoder."},
     )
+    talker_ctc_refine: bool = field(
+        default=False,
+        metadata={"help": "Whether to use ctc refiner after speech encoder."},
+    )
     talker_numbers: int = field(
         default=2,
         metadata={"help": "The number of talker."},
@@ -62,6 +66,23 @@ class ModelArguments:
         default=896,
         metadata={"help": "The number of hidden nodes of separator."},
     )
+    ctc_bridge: bool = field(
+        default=False,
+        metadata={"help": "Whether to use ctc bridge module."},
+    )
+    ctc_bridge_type: str = field(
+        default="raw",
+        metadata={"help": "Type of CTC bridge module."}
+    )
+    decoder_cross_attention: bool = field(
+        default=False,
+        metadata={"help": "Whether to use cross attention module."},
+    )
+    decoder_cross_attention_type: str = field(
+        default="raw",
+        metadata={"help": "Type of cross attention module."}
+    )
+
     token: str = field(
         default=None,
         metadata={

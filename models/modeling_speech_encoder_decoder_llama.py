@@ -28,11 +28,24 @@ from transformers.models.speech_encoder_decoder.configuration_speech_encoder_dec
 from modeling_llama import LlamaForCausalLM
 from modeling_wavlm import WavLMModel
 from separator import Separator
-from separator_mask import MaskSeparator
-from separator_stable import StableSoftmaxSeparator
+from crossatt_module import TinyCrossAttnAdapter
 from ctc import CTC
 from down_sampling import WavLMPostDownsample
 from losses import HybridLoss
+
+from refiners_weightsconcat import (
+    CTCPerSpeakerExtractorConcatSoftmax,
+    CTCPerSpeakerExtractorConcatNNG,
+)
+
+from ctc_prompt import (
+    build_multi_ctc_prefix_from_heads,
+)
+from refiners_sep_mix_fusion import (
+    CrossAttnFrameExtractorNoVocab,
+    build_multispeaker_prefix_from_embeds,
+)
+from sep_gate_fuse import SepMixGatedFusion
 
 from torch.nn.utils.rnn import pad_sequence
 
@@ -58,6 +71,17 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start
     shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
 
     return shifted_input_ids
+
+def align_mask_len(mask_bt, T_target):
+    T = mask_bt.size(1)
+    if T == T_target:
+        return mask_bt
+    if T > T_target:                      # 多1帧 → 直接截掉
+        return mask_bt[:, :T_target]
+    # 少1帧 → 在末尾补最后一个值（一般是 False/0）
+    pad_val = mask_bt[:, -1:].clone()
+    return torch.cat([mask_bt, pad_val], dim=1)
+
 
 class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
     config_class = SpeechEncoderDecoderConfig
@@ -123,13 +147,18 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         self.decoder.config = self.config.decoder
 
         # For special tokens
-        self.ignore_token_id = getattr(self.config, "ignore_token_id", None)
-        self.pad_token_id    = getattr(self.config, "pad_token_id",   None)
-        self.sc_token_id     = getattr(self.config, "sc_token_id",    None)
-        self.talker_ctc      = getattr(self.config, "talker_ctc",     False)
-        self.talker_numbers  = getattr(self.config, "talker_numbers", 2)
-        self.instruct        = getattr(self.config, "instruct",       False)
-        self.eos_token_id    = getattr(self.config, "eos_token_id", None)
+        self.ignore_token_id   = getattr(self.config, "ignore_token_id", None)
+        self.pad_token_id      = getattr(self.config, "pad_token_id",   None)
+        self.sc_token_id       = getattr(self.config, "sc_token_id",    None)
+        self.talker_ctc        = getattr(self.config, "talker_ctc",     False)
+        self.talker_ctc_refine = getattr(self.config, "talker_ctc_refine",     False)
+        self.talker_numbers    = getattr(self.config, "talker_numbers", 2)
+        self.instruct          = getattr(self.config, "instruct",       False)
+        self.eos_token_id      = getattr(self.config, "eos_token_id", None)
+        self.ctc_bridge        = getattr(self.config, "ctc_bridge", False)
+        self.ctc_bridge_type   = getattr(self.config, "ctc_bridge_type", "raw")
+        self.decoder_cross_attention = getattr(self.config, "decoder_cross_attention", False)
+        self.decoder_cross_attention_type = getattr(self.config, "decoder_cross_attention_type", "raw")
 
         if self.instruct:
             self.bosp_token_id = self.config.bosp_token_id
@@ -145,36 +174,6 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 hidden_size=config.separator_hidden,
                 talker_numbers=self.talker_numbers
             )
-            """
-            self.separator = MaskSeparator(
-                in_dim=self.config.encoder.output_hidden_size,
-                hidden_size=self.config.encoder.output_hidden_size,
-                talker_numbers=self.talker_numbers,
-                num_layers=2,
-                dropout=0.2,
-                route="topk",         # or "softmax" / "entmax"
-                temperature=0.7,
-                topk_k=2,             # recommended for 3-spk
-                force_preproj=True,   # strongly recommended if encoder is frozen
-                use_branch_ff=True,
-                use_custom_lstm=True, # you have StackedCustomLSTM
-            )
-            """
-            """
-            self.separator = StableSoftmaxSeparator(
-                in_dim=self.config.encoder.output_hidden_size,  # e.g., 1024
-                sep_dim=config.separator_hidden,
-                num_heads=self.talker_numbers,                  # 2 or 3
-                num_layers=2,
-                dropout=0.2,
-                bidirectional=True,
-                use_layernorm=True,
-                route_tau=0.6,
-                route_gamma=None,   # 先关
-                route_pmin=None,    # 先关
-                out_align_dim=self.config.encoder.output_hidden_size  # e.g., 1024，对齐到 CTC 期望
-            )
-            """
             self.ctc_blank_id = config.decoder.vocab_size+1
             def make_ctc():
                 return CTC(
@@ -186,6 +185,37 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             self.ctc_blank_id = config.decoder.vocab_size+1
             self.serialized_ctc = []
 
+        if self.talker_ctc_refine:
+            assert self.talker_ctc, "self.talker_ctc must be True to run this code path"
+            self.ctc_refiner = CrossAttnFrameExtractorNoVocab(
+                d_enc=self.config.encoder.output_hidden_size,
+                d_model=self.config.encoder.output_hidden_size,
+                nhead=4,
+                num_layers=4,
+                d_tok=self.decoder.config.hidden_size,
+            )
+            def make_ctc():
+                return CTC(
+                    odim=self.ctc_blank_id,
+                    encoder_output_size=config.encoder.output_hidden_size
+                )
+            self.serialized_refined_ctc = nn.ModuleList([make_ctc() for _ in range(self.talker_numbers)])
+        else:
+            self.serialized_refined_ctc = []
+
+        if self.decoder_cross_attention:
+            self.cross_att_adap = nn.ModuleList([
+                TinyCrossAttnAdapter(
+                hidden_size=self.decoder.config.hidden_size,
+                mem_dim=self.config.encoder.output_hidden_size,
+                attn_dim=512,
+                dropout=self.config.decoder.attention_dropout,
+                )
+                for _ in range(self.decoder.config.num_hidden_layers)
+            ])
+        else:
+            self.cross_att_adap = None
+
         # get encoder output hidden size
         self.encoder_output_dim = getattr(config.encoder, "output_hidden_size", config.encoder.hidden_size)
         if (
@@ -194,6 +224,23 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         ):
             # encoder outputs might need to be projected to different dimension for decoder
             self.enc_to_dec_proj = nn.Linear(self.encoder.config.hidden_size, self.decoder.config.hidden_size)
+
+        if self.ctc_bridge:
+            if(self.ctc_bridge_type == "softmax"):
+                # Currently help for 2-talker, but no significant improment for 3-talker
+                self.ctc_extractor_concat = CTCPerSpeakerExtractorConcatSoftmax(
+                    d_in=self.config.encoder.output_hidden_size,
+                    d_model=self.config.encoder.output_hidden_size,
+                    K_spk=self.talker_numbers,
+                    use_repair=True,
+                    n_heads=8,
+                    band_repair=24,
+                    resample_mode="nearest",
+                )
+            elif(self.ctc_bridge_type == "gate"):
+                self.ctc_extractor_concat = SepMixGatedFusion(
+                    d_model=self.config.encoder.output_hidden_size
+                )
 
         if self.encoder.get_output_embeddings() is not None:
             raise ValueError(
@@ -484,17 +531,9 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
 
         # Here we add serialized CTC
         if self.talker_ctc:
-            sep_hidden_stages = self.separator(mixed_encoding_feature)
-            # sep_hidden_stages, _ = self.separator(mixed_encoding_feature)
-            # sep_hidden_stages, sep_masks, _, _ = self.separator(mixed_encoding_feature)
-
-            ctc_transcriptions = []
-            # for i, ctc_head in enumerate(self.serialized_ctc):
-            #     _argmax = ctc_head.argmax(sep_hidden_stages[i])
-            #     _transcription, _transcription_shape = self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
-            #     ctc_transcriptions.append(_transcription)
+            sep_hidden_states = self.separator(mixed_encoding_feature)
         else:
-            sep_hidden_stages = None
+            sep_hidden_states = None
 
         # optionally project encoder_hidden_states
         if (
@@ -522,6 +561,107 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             encoder_attention_mask = None
             if self.talker_ctc:
                 encoder_attention_mask_ctc = None
+
+        if self.decoder_cross_attention:
+            if(self.decoder_cross_attention_type == "mix"):
+                acoustic_mem = mixed_encoding_feature
+                acoustic_mask = encoder_attention_mask_ctc
+            elif(self.decoder_cross_attention_type == "sep"):
+                acoustic_mem = torch.cat(sep_hidden_states, dim=1)
+                acoustic_mask = encoder_attention_mask_ctc.repeat(1, self.talker_numbers)
+                T_target = acoustic_mem.size(1)
+                acoustic_mask = align_mask_len(acoustic_mask, T_target)
+
+        # Here we add the serized refined CTC
+        if self.talker_ctc_refine:
+            ctc_transcription_list = []
+            for i, ctc_head in enumerate(self.serialized_ctc):
+                _argmax = ctc_head.argmax(sep_hidden_states[i])
+                _transcription, _transcription_shape = \
+                    self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id-1, pad_id=self.pad_token_id)
+                ctc_transcription_list.append(_transcription)
+
+            if hasattr(self.decoder, "model") and hasattr(self.decoder.model, "embed_tokens"):
+                embed = self.decoder.model.embed_tokens
+            else:
+                embed = self.decoder.get_input_embeddings()
+
+            ctc_emb_list = [
+                embed(ctc_ids_k)
+                for ctc_ids_k in ctc_transcription_list
+            ]
+
+            speaker_order = list(range(self.talker_numbers))
+
+            z_list, z_serial, y_sot_ids, prefix_emb = build_multispeaker_prefix_from_embeds(
+                extractor=self.ctc_refiner,
+                h_mix=mixed_encoding_feature,
+                ctc_emb_list=ctc_emb_list,
+                ctc_ids_list=ctc_transcription_list,
+                speaker_order=speaker_order,
+                llama_embed=embed,
+                mix_mask=~encoder_attention_mask_ctc,   # 如果有 padding，可以给 [B, Tm] 的 mask
+            )
+            sep_refined_hidden_states = z_list
+
+        # Here we check whether use CTC bridge module
+        if self.ctc_bridge:
+            # directly use the separated encoding
+            if(self.ctc_bridge_type == "raw"):
+                X_ref = torch.cat(sep_hidden_states, dim=1)
+                X_ref, _ = self.encoder.adapter(X_ref)
+                X_ref = self.enc_to_dec_proj(X_ref)
+                encoder_hidden_states = X_ref
+
+                encoder_attention_mask = encoder_attention_mask.repeat(1, self.talker_numbers)
+                T_target = encoder_hidden_states.size(1)
+                encoder_attention_mask = align_mask_len(encoder_attention_mask, T_target)
+
+            # ASRU 2025 proposed method: concat ctc transcription embedding + mixed encoding
+            elif(self.ctc_bridge_type == "ctcprompt"):
+                # Here we add serialized CTC
+                ctc_transcription_list = []
+                for i, ctc_head in enumerate(self.serialized_ctc):
+                    _argmax = ctc_head.argmax(sep_hidden_states[i])
+                    _transcription, _transcription_shape = \
+                        self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id-1, pad_id=self.pad_token_id)
+                    ctc_transcription_list.append(_transcription)
+
+                ctc_prefix_embeds, ctc_prefix_mask, ctc_prefix_ids = build_multi_ctc_prefix_from_heads(
+                    ctc_transcription_list=ctc_transcription_list,
+                    decoder=self.decoder,
+                    pad_id=self.pad_token_id,
+                    max_prefix_len_per_head=None,
+                )
+
+                encoder_hidden_states = torch.cat(
+                    [ctc_prefix_embeds, encoder_hidden_states],
+                    dim=1,
+                )
+
+                encoder_attention_mask = torch.cat(
+                    [ctc_prefix_mask, encoder_attention_mask.bool()],
+                    dim=1,
+                )   # [B, Lp_total + Tm]
+
+            elif(self.ctc_bridge_type == "gate"):
+                fused_list = []
+                for k in range(self.talker_numbers):
+                    sep_k = sep_hidden_states[k]
+                    fused_k = self.ctc_extractor_concat(
+                        sep_feat=sep_k,
+                        mix_feat=mixed_encoding_feature,
+                        mask=encoder_attention_mask_ctc,
+                    )
+                    fused_list.append(fused_k)
+                X_ref = torch.cat(fused_list, dim=1)
+                X_ref, _ = self.encoder.adapter(X_ref)
+                X_ref = self.enc_to_dec_proj(X_ref)
+                encoder_hidden_states = X_ref
+
+                encoder_attention_mask = encoder_attention_mask.repeat(1, self.talker_numbers)
+                T_target = encoder_hidden_states.size(1)
+                encoder_attention_mask = align_mask_len(encoder_attention_mask, T_target)
 
         if (labels is not None) and (decoder_input_ids is None and decoder_inputs_embeds is None):
             # labels-> decoder_input_ids : add  
@@ -609,6 +749,9 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             use_cache=use_cache,
             past_key_values=past_key_values,
             return_dict=return_dict,
+            acoustic_mem=acoustic_mem, 
+            acoustic_mask=~acoustic_mask,
+            adaptation_modules=self.cross_att_adap,
             **kwargs_decoder,
         )
 
@@ -621,8 +764,8 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 decoder_outputs=decoder_outputs,
                 labels=labels,
                 decoder_vocab_size=self.decoder.config.vocab_size,
-                talker_ctc=self.serialized_ctc,
-                sep_hidden_states=sep_hidden_stages,
+                talker_ctc=self.serialized_refined_ctc if self.talker_ctc_refine else self.serialized_ctc,
+                sep_hidden_states=sep_refined_hidden_states if self.talker_ctc_refine else sep_hidden_states,
                 encoder_attention_mask_ctc=encoder_attention_mask_ctc,
                 label_spks=label_spks,
                 label_spks_lengths=label_spks_lengths,
@@ -715,7 +858,7 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             for i, ctc_head in enumerate(self.serialized_ctc):
                 _argmax = ctc_head.argmax(sep_hidden_states[i])
                 _transcription, _transcription_shape = \
-                    self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id, pad_id=self.pad_token_id)
+                    self.ctc_remove_duplicates_and_blank(_argmax, blank_id=self.ctc_blank_id-1, pad_id=self.pad_token_id)
                 ctc_transcription_list.append(_transcription)
 
         ctc_transcription = torch.cat(ctc_transcription_list, dim=1)

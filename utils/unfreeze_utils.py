@@ -67,7 +67,7 @@ def unfreeze_selected_params(model, train_mode, model_args) -> None:
                 param.requires_grad = True
 
     # 3) Keep encoder-decoder projection layers trainable
-    if(train_mode != 'ctc'):
+    if(train_mode != 'ctc') and (not model_args.ctc_bridge):
         for name, param in model.named_parameters():
             if "enc_to_dec_proj" in name:
                 param.requires_grad = True

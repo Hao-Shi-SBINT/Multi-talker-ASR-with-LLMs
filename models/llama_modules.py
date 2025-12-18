@@ -22,7 +22,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union, Sequence
 
 import torch
 import torch.utils.checkpoint
@@ -321,6 +321,9 @@ class LlamaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        adaptation_module: Optional[Sequence[nn.Module]] = None,
+        acoustic_mem: torch.FloatTensor = None,
+        acoustic_mask: torch.FloatTensor = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
@@ -340,6 +343,13 @@ class LlamaDecoderLayer(nn.Module):
             **kwargs,
         )
         hidden_states = residual + hidden_states
+
+        if adaptation_module is not None and acoustic_mem is not None:
+            hidden_states = adaptation_module(
+                hidden_states,
+                acoustic_mem,
+                mem_mask=acoustic_mask,
+            )
 
         # Fully Connected
         residual = hidden_states

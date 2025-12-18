@@ -23,11 +23,14 @@ for arg in "$@"; do
     corpus=*)                         corpus="${arg#*=}" ;;
     instruct=*)                       instruct="${arg#*=}" ;;
     talker_ctc=*)                     talker_ctc="${arg#*=}" ;;
+    talker_ctc_refine=*)              talker_ctc_refine="${arg#*=}" ;;
     talker_numbers=*)                 talker_numbers="${arg#*=}" ;;
     separator_hidden=*)               separator_hidden="${arg#*=}" ;;
     train_mode=*)                     train_mode="${arg#*=}" ;;
     encoder_freeze=*)                 encoder_freeze="${arg#*=}" ;;
     decoder_freeze=*)                 decoder_freeze="${arg#*=}" ;;
+    decoder_cross_attention=*)        decoder_cross_attention="${arg#*=}" ;;
+    decoder_cross_attention_type=*)   decoder_cross_attention_type="${arg#*=}" ;;
     adapter_only_decoder=*)           adapter_only_decoder="${arg#*=}" ;;
     per_device_train_batch_size=*)    per_device_train_batch_size="${arg#*=}" ;;
     per_device_eval_batch_size=*)     per_device_eval_batch_size="${arg#*=}" ;;
@@ -42,6 +45,8 @@ for arg in "$@"; do
     virtual_env=*)                    virtual_env="${arg#*=}" ;;
     cache_dir=*)                      cache_dir="${arg#*=}" ;;
     seed=*)                           seed="${arg#*=}" ;;
+    ctc_bridge=*)           ctc_bridge="${arg#*=}" ;;
+    ctc_bridge_type=*)      ctc_bridge_type="${arg#*=}" ;;
     # ignore unknown keys instead of failing:
     # *) echo "[WARN] Unknown arg: $arg" >&2 ;;
   esac
@@ -65,8 +70,11 @@ decoder="${decoder-Llama-3.2-1B}"
 corpus="${corpus-libri3mix_clean}"
 instruct="${instruct-false}"
 talker_ctc="${talker_ctc-true}"
+talker_ctc_refine="${talker_ctc_refine-false}"
 talker_numbers="${talker_numbers-3}"
 separator_hidden="${separator_hidden-796}"
+decoder_cross_attention="${decoder_cross_attention-false}"
+decoder_cross_attention_type="${decoder_cross_attention_type-raw}"
 
 # Other toggles
 train_mode="${train_mode-hybrid}"
@@ -74,6 +82,8 @@ encoder_freeze="${encoder_freeze-false}"
 decoder_freeze="${decoder_freeze-true}"
 adapter_only_decoder="${adapter_only_decoder-true}"
 precision="${precision:-fp32}"
+ctc_bridge="${ctc_bridge:-false}"
+ctc_bridge_type="${ctc_bridge_type:-raw}"
 
 # Batch sizes
 per_device_train_batch_size="${per_device_train_batch_size-16}"
@@ -128,12 +138,17 @@ bash ../run.sh \
   train_mode=$train_mode \
   instruct=$instruct \
   talker_ctc=$talker_ctc \
+  talker_ctc_refine=$talker_ctc_refine \
   precision=$precision \
   separator_hidden=$separator_hidden \
   pretrain_separator_path=$pretrain_separator_path \
+  decoder_cross_attention=$decoder_cross_attention \
+  decoder_cross_attention_type=$decoder_cross_attention_type \
   cache_dir=$cache_dir \
   seed=$seed \
   talker_numbers=$talker_numbers \
+  ctc_bridge=$ctc_bridge \
+  ctc_bridge_type=$ctc_bridge_type \
   output_dir="$output_dir" \
   eval_steps=$eval_steps \
   virtual_env=$virtual_env

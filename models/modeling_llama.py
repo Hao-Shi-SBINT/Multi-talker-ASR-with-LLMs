@@ -17,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union, Sequence
 
 import torch
 import torch.utils.checkpoint
@@ -100,6 +100,9 @@ class LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        acoustic_mem: torch.FloatTensor = None,
+        acoustic_mask: torch.FloatTensor = None,
+        adaptation_modules: Optional[Sequence[nn.Module]] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -191,9 +194,15 @@ class LlamaModel(LlamaPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        # for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+
+            if adaptation_modules:
+                adaptation_module = adaptation_modules[layer_idx]
+            else:
+                adaptation_module = None
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
@@ -206,6 +215,9 @@ class LlamaModel(LlamaPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
+                    adaptation_module,
+                    acoustic_mem,
+                    acoustic_mask,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -217,6 +229,9 @@ class LlamaModel(LlamaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    adaptation_module=adaptation_module,
+                    acoustic_mem=acoustic_mem,
+                    acoustic_mask=acoustic_mask,
                     **flash_attn_kwargs,
                 )
 
