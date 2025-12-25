@@ -344,9 +344,8 @@ class HybridLoss(nn.Module):
             self.last_ctc_per_head = None
         elif self.mode == 'ctc':
             total_loss = loss_ctc
-            print(ctc_per_head)
             self.last_ctc_per_head = ctc_per_head
-        else:
+        elif self.mode == 'hybrid':
             total_loss = self.alpha * loss_attn + (1.0 - self.alpha) * loss_ctc
             self.last_ctc_per_head = ctc_per_head
 

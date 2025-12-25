@@ -22,7 +22,8 @@ partial_decoder_unfreeze=""
 partial_others_unfreeze="cross_att_adap"
 
 decoder_cross_attention=true
-decoder_cross_attention_type=sep
+decoder_cross_attention_type=tiny
+decoder_cross_attention_feature=sep
 
 per_device_train_batch_size=8
 per_device_eval_batch_size=8
@@ -41,7 +42,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-encoder_freeze-decoder_fre
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -53,7 +54,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-Instruct-encoder_freeze-de
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -66,7 +67,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-encoder_freeze-decoder_fre
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -78,7 +79,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-Instruct-encoder_freeze-de
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -94,7 +95,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-encoder_freeze-decoder_fre
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -106,7 +107,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-Instruct-encoder_freeze-de
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -119,7 +120,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-encoder_freeze-decoder_fre
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \
@@ -131,7 +132,7 @@ pmp=exp_ctc_finished/mode_ctc-wavlm-Meta-Llama-3.1-8B-Instruct-encoder_freeze-de
 sbatch \
   ${EXCLUDE_NODES:+--exclude="${EXCLUDE_NODES// /}"} \
   --job-name="$dec-$corp-$ins" \
-  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}" \
+  --export=ALL,decoder="$dec",corpus="$corp",instruct="$ins",talker_ctc="$ctc",talker_numbers="$tn",pretrain_model_path="${pmp:-}",per_device_train_batch_size="$per_device_train_batch_size",per_device_eval_batch_size="$per_device_eval_batch_size",encoder_freeze="${ef:-}",train_mode="${train_mode:-}",adapter_only_decoder="${adapter_only_decoder:-}",stage="${stage:-}",stop_stage="${stop_stage:-}",decoder_cross_attention="${decoder_cross_attention}",decoder_cross_attention_type="${decoder_cross_attention_type}",decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
   template.slurm \
   partial_encoder_unfreeze="$partial_encoder_unfreeze" \
   partial_decoder_unfreeze="$partial_decoder_unfreeze" \

@@ -100,9 +100,13 @@ class LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        acoustic_mem: torch.FloatTensor = None,
-        acoustic_mask: torch.FloatTensor = None,
+        acoustic_mem: Optional[torch.FloatTensor] = None,
+        acoustic_sep: Optional[torch.Tensor] = None,
+        acoustic_mask: Optional[torch.FloatTensor] = None,
+        acoustic_conf: Optional[torch.FloatTensor] = None,
+        acoustic_ctc_mask: Optional[torch.FloatTensor] = None,
         adaptation_modules: Optional[Sequence[nn.Module]] = None,
+        ctc_modules: Optional[Sequence[nn.Module]] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -217,7 +221,11 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_embeddings,
                     adaptation_module,
                     acoustic_mem,
+                    acoustic_sep,
                     acoustic_mask,
+                    acoustic_conf,
+                    acoustic_ctc_mask,
+                    ctc_modules,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -231,7 +239,11 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_embeddings=position_embeddings,
                     adaptation_module=adaptation_module,
                     acoustic_mem=acoustic_mem,
+                    acoustic_sep=acoustic_sep,
                     acoustic_mask=acoustic_mask,
+                    acoustic_conf=acoustic_conf,
+                    acoustic_ctc_mask=acoustic_ctc_mask,
+                    ctc_modules=ctc_modules,
                     **flash_attn_kwargs,
                 )
 

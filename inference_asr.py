@@ -94,6 +94,9 @@ def main():
     config.ctc_alpha = model_args.ctc_alpha
     config.ctc_bridge = model_args.ctc_bridge
     config.ctc_bridge_type = model_args.ctc_bridge_type
+    # config.decoder_cross_attention = model_args.decoder_cross_attention
+    # config.decoder_cross_attention_type = model_args.decoder_cross_attention_type
+    # config.decoder_cross_attention_feature = model_args.decoder_cross_attention_feature
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models

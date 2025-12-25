@@ -31,6 +31,7 @@ for arg in "$@"; do
     decoder_freeze=*)                 decoder_freeze="${arg#*=}" ;;
     decoder_cross_attention=*)        decoder_cross_attention="${arg#*=}" ;;
     decoder_cross_attention_type=*)   decoder_cross_attention_type="${arg#*=}" ;;
+    decoder_cross_attention_feature=*) decoder_cross_attention_feature="${arg#*=}" ;;
     adapter_only_decoder=*)           adapter_only_decoder="${arg#*=}" ;;
     per_device_train_batch_size=*)    per_device_train_batch_size="${arg#*=}" ;;
     per_device_eval_batch_size=*)     per_device_eval_batch_size="${arg#*=}" ;;
@@ -74,7 +75,8 @@ talker_ctc_refine="${talker_ctc_refine-false}"
 talker_numbers="${talker_numbers-3}"
 separator_hidden="${separator_hidden-796}"
 decoder_cross_attention="${decoder_cross_attention-false}"
-decoder_cross_attention_type="${decoder_cross_attention_type-raw}"
+decoder_cross_attention_type="${decoder_cross_attention_type-tiny}"
+decoder_cross_attention_feature="${decoder_cross_attention_feature-raw}"
 
 # Other toggles
 train_mode="${train_mode-hybrid}"
@@ -97,27 +99,11 @@ pretrain_model_path="${pretrain_model_path-}"                             # keep
 seed="${seed-42}"
 pretrain_separator_path="${pretrain_separator_path:-none}"
 
-# (Optional) quick debug
-echo "[INFO] decoder=${decoder}"
-echo "[INFO] corpus=${corpus}"
-echo "[INFO] train_mode=${train_mode}"
-echo "[INFO] instruct=${instruct}  talker_ctc=${talker_ctc}  talker_numbers=${talker_numbers}"
-echo "[INFO] partial_encoder_unfreeze='${partial_encoder_unfreeze}'"
-echo "[INFO] partial_decoder_unfreeze='${partial_decoder_unfreeze}'"
-echo "[INFO] partial_others_unfreeze='${partial_others_unfreeze}'"
-echo "[INFO] pretrain_model_path='${pretrain_model_path}'"
-echo "[INFO] seed='${seed}'"
-
 ########################################
 # 3) Output directory tag/naming (optional)
 ########################################
 tag="dec=${decoder}_corpus=${corpus}_ins=${instruct}_ctc=${talker_ctc}_tn=${talker_numbers}"
 output_dir="${output_dir-exp}"   # root; run.sh can append tag/time if needed
-
-echo "[INFO] combo: ${tag}"
-echo "[INFO] output_dir: ${output_dir}"
-
-echo $separator_hidden
 
 bash ../run.sh \
   stage=$stage \
@@ -144,6 +130,7 @@ bash ../run.sh \
   pretrain_separator_path=$pretrain_separator_path \
   decoder_cross_attention=$decoder_cross_attention \
   decoder_cross_attention_type=$decoder_cross_attention_type \
+  decoder_cross_attention_feature=$decoder_cross_attention_feature \
   cache_dir=$cache_dir \
   seed=$seed \
   talker_numbers=$talker_numbers \

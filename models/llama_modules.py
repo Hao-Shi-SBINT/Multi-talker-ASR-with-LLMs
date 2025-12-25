@@ -323,7 +323,11 @@ class LlamaDecoderLayer(nn.Module):
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         adaptation_module: Optional[Sequence[nn.Module]] = None,
         acoustic_mem: torch.FloatTensor = None,
+        acoustic_sep: torch.FloatTensor = None,
         acoustic_mask: torch.FloatTensor = None,
+        acoustic_conf: torch.FloatTensor = None,
+        acoustic_ctc_mask: torch.FloatTensor = None,
+        ctc_modules: Optional[Sequence[nn.Module]] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
@@ -348,7 +352,11 @@ class LlamaDecoderLayer(nn.Module):
             hidden_states = adaptation_module(
                 hidden_states,
                 acoustic_mem,
+                acoustic_sep,
                 mem_mask=acoustic_mask,
+                mem_conf=acoustic_conf,
+                mem_ctc_mask=acoustic_ctc_mask,
+                ctc_modules=ctc_modules,
             )
 
         # Fully Connected

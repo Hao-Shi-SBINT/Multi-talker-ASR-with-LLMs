@@ -20,7 +20,8 @@ corpus=libri2mix_mini
 talker_numbers=2
 
 decoder_cross_attention=true
-decoder_cross_attention_type=sep
+decoder_cross_attention_type=tiny
+decoder_cross_attention_feature=sep
 
 encoder=wavlm
 decoder=Llama-3.2-1B
@@ -40,7 +41,7 @@ instruct=false
 
 
 talker_ctc=true
-talker_ctc_refine=false
+talker_ctc_refine=true
 eval_steps=16
 virtual_env=/lustre/users/shi/toolkits/m_speaker_llm/venv
 ctc_bridge=false
@@ -54,7 +55,7 @@ output_dir=exp
 partial_encoder_unfreeze=""
 partial_decoder_unfreeze=""
 # partial_others_unfreeze="ctc_extractor_concat,enc_to_dec_proj"
-partial_others_unfreeze="cross_att_adap"
+partial_others_unfreeze="cross_att_adap,serilized_refine"
 
 
 
@@ -66,9 +67,7 @@ per_device_eval_batch_size=16
 separator_hidden=796
 
 pt_separator="${pretrain_separator_path:-none}"
-pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri2mix_noisy
-# pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri2mix_noisy
-# pmp=exp_ctc_finished/mode_ctc-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-adater_encoder_decoder-ctc-libri3mix_noisy
+pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-encoder_freeze-decoder_freeze-ctc-cross_attention_sep-libri2mix_noisy
 
 
 
@@ -101,6 +100,7 @@ bash ../run.sh \
         separator_hidden=$separator_hidden \
 	decoder_cross_attention=$decoder_cross_attention \
 	decoder_cross_attention_type=$decoder_cross_attention_type \
+	decoder_cross_attention_feature=$decoder_cross_attention_feature \
 	output_dir=${output_dir} \
 	cache_dir=${cache_dir} \
 	precision=$precision \

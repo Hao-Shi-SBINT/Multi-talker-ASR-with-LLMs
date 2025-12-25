@@ -33,6 +33,7 @@ for arg in "$@"; do
     output_dir=*)           output_dir="${arg#*=}" ;;
     decoder_cross_attention=*)        decoder_cross_attention="${arg#*=}" ;;
     decoder_cross_attention_type=*)   decoder_cross_attention_type="${arg#*=}" ;;
+    decoder_cross_attention_feature=*) decoder_cross_attention_feature="${arg#*=}" ;;
     per_device_train_batch_size=*)   per_device_train_batch_size="${arg#*=}" ;;
     per_device_eval_batch_size=*)    per_device_eval_batch_size="${arg#*=}" ;;
     partial_encoder_unfreeze=*)      partial_encoder_unfreeze="${arg#*=}" ;;
@@ -81,6 +82,7 @@ echo "[run] ctc_bridge=$ctc_bridge"
 echo "[run] ctc_bridge_type=$ctc_bridge_type"
 echo "[run] decoder_cross_attention=$decoder_cross_attention"
 echo "[run] decoder_cross_attention_type=$decoder_cross_attention_type"
+echo "[run] decoder_cross_attention_feature=$decoder_cross_attention_feature"
 
 # output_dir=${output_dir}/${encoder}-${decoder}
 output_dir=${output_dir}/mode_${train_mode}-${encoder}-${decoder}
@@ -107,7 +109,8 @@ if [ "${talker_ctc_refine}" = "true" ]; then
    output_dir="${output_dir}-refine"
 fi
 if [ "${decoder_cross_attention}" = "true" ]; then
-   output_dir="${output_dir}-cross_attention_${decoder_cross_attention_type}"
+   # output_dir="${output_dir}-cross_attention_${decoder_cross_attention_feature}"
+   output_dir="${output_dir}-cross_attention_${decoder_cross_attention_type}_${decoder_cross_attention_feature}"
 fi
 if [ "${ctc_bridge}" = "true" ]; then
     output_dir="${output_dir}-${ctc_bridge_type}"
@@ -197,6 +200,7 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
 	--ctc_bridge_type="${ctc_bridge_type}" \
 	--decoder_cross_attention="${decoder_cross_attention}" \
 	--decoder_cross_attention_type="${decoder_cross_attention_type}" \
+	--decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
 	--freeze_feature_encoder true \
 	--freeze_encoder ${encoder_freeze} \
 	--freeze_decoder ${decoder_freeze} \
@@ -259,6 +263,7 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
             --ctc_bridge_type="${ctc_bridge_type}" \
             --decoder_cross_attention="${decoder_cross_attention}" \
             --decoder_cross_attention_type="${decoder_cross_attention_type}" \
+	    --decoder_cross_attention_feature="${decoder_cross_attention_feature}" \
             --freeze_encoder ${encoder_freeze} \
             --freeze_decoder ${decoder_freeze} \
             --partial_encoder_unfreeze="${partial_encoder_unfreeze}" \

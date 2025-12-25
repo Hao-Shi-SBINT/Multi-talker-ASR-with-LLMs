@@ -79,8 +79,12 @@ class ModelArguments:
         metadata={"help": "Whether to use cross attention module."},
     )
     decoder_cross_attention_type: str = field(
-        default="raw",
+        default="tiny",
         metadata={"help": "Type of cross attention module."}
+    )
+    decoder_cross_attention_feature: str = field(
+        default="raw",
+        metadata={"help": "Feature of cross attention module."}
     )
 
     token: str = field(

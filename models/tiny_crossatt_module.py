@@ -23,7 +23,7 @@ class TinyCrossAttnAdapter(nn.Module):
         self.ln_in = nn.LayerNorm(hidden_size)
         self.ln_out = nn.LayerNorm(hidden_size)
 
-    def forward(self, hidden, mem, mem_mask=None):
+    def forward(self, hidden, mem, mem_sep, mem_mask=None, mem_conf=None, mem_ctc_mask=None, ctc_modules=None):
         """
         hidden: [B, L_q, H]   文本侧 hidden（训练时 L_q=L，推理时 L_q=1 也可以）
         mem:    [B, T_m, D]   声学 serialized / fused 特征
