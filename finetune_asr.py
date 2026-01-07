@@ -100,6 +100,9 @@ def main():
     config.decoder_cross_attention = model_args.decoder_cross_attention
     config.decoder_cross_attention_type = model_args.decoder_cross_attention_type
     config.decoder_cross_attention_feature = model_args.decoder_cross_attention_feature
+    config.decoder_cross_attention_dynamic = model_args.decoder_cross_attention_dynamic
+    config.decoder_cross_attention_dynamic_threshold = model_args.decoder_cross_attention_dynamic_threshold
+    config.decoder_cross_attention_dynamic_loss = model_args.decoder_cross_attention_dynamic_loss
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models

@@ -106,6 +106,8 @@ class LlamaModel(LlamaPreTrainedModel):
         acoustic_conf: Optional[torch.FloatTensor] = None,
         acoustic_ctc_mask: Optional[torch.FloatTensor] = None,
         adaptation_modules: Optional[Sequence[nn.Module]] = None,
+        adaptation_layer_gate_modules: Optional[Sequence[nn.Module]] = None,
+        adaptation_layer_gate_modules_threshold: torch.FloatTensor = None,
         ctc_modules: Optional[Sequence[nn.Module]] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
@@ -198,6 +200,14 @@ class LlamaModel(LlamaPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
+        logits = adaptation_layer_gate_modules.detach().cpu()
+        probs  = F.softmax(adaptation_layer_gate_modules, dim=0).detach().cpu()
+        logits_str = " ".join(f"{v:.8f}" for v in logits.tolist())
+        probs_str  = " ".join(f"{p:.8f}" for p in probs.tolist())
+
+        # print("layer_gate_logits:", logits_str)
+        print("layer_gate_softmax:", probs_str)
+
         # for decoder_layer in self.layers[: self.config.num_hidden_layers]:
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if output_hidden_states:
@@ -207,6 +217,11 @@ class LlamaModel(LlamaPreTrainedModel):
                 adaptation_module = adaptation_modules[layer_idx]
             else:
                 adaptation_module = None
+
+            if adaptation_layer_gate_modules is not None:
+                adaptation_layer_gate_module = adaptation_layer_gate_modules[layer_idx]
+            else:
+                adaptation_layer_gate_module = None
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
@@ -220,6 +235,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     cache_position,
                     position_embeddings,
                     adaptation_module,
+                    adaptation_layer_gate_module,
+                    adaptation_layer_gate_modules_threshold,
                     acoustic_mem,
                     acoustic_sep,
                     acoustic_mask,
@@ -238,6 +255,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                     adaptation_module=adaptation_module,
+                    adaptation_layer_gate_module=adaptation_layer_gate_module,
+                    adaptation_layer_gate_modules_threshold=adaptation_layer_gate_modules_threshold,
                     acoustic_mem=acoustic_mem,
                     acoustic_sep=acoustic_sep,
                     acoustic_mask=acoustic_mask,

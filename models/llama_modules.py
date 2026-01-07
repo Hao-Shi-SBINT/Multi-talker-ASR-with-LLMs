@@ -322,6 +322,8 @@ class LlamaDecoderLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         adaptation_module: Optional[Sequence[nn.Module]] = None,
+        adaptation_layer_gate_module: Optional[Sequence[nn.Module]] = None,
+        adaptation_layer_gate_modules_threshold: torch.FloatTensor = None,
         acoustic_mem: torch.FloatTensor = None,
         acoustic_sep: torch.FloatTensor = None,
         acoustic_mask: torch.FloatTensor = None,
@@ -349,15 +351,33 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         if adaptation_module is not None and acoustic_mem is not None:
-            hidden_states = adaptation_module(
-                hidden_states,
-                acoustic_mem,
-                acoustic_sep,
-                mem_mask=acoustic_mask,
-                mem_conf=acoustic_conf,
-                mem_ctc_mask=acoustic_ctc_mask,
-                ctc_modules=ctc_modules,
-            )
+            if adaptation_layer_gate_module is not None:
+                gate = torch.sigmoid(adaptation_layer_gate_module)
+                skip_threshold = adaptation_layer_gate_modules_threshold
+                if (not self.training) and (gate.item() <= skip_threshold):
+                    pass
+                else:
+                    refined_hidden_states = adaptation_module(
+                        hidden_states,
+                        acoustic_mem,
+                        acoustic_sep,
+                        mem_mask=acoustic_mask,
+                        mem_conf=acoustic_conf,
+                        mem_ctc_mask=acoustic_ctc_mask,
+                        ctc_modules=ctc_modules,
+                    )
+                    #print(gate)
+                    hidden_states = hidden_states + gate * (refined_hidden_states - hidden_states)
+            else:
+                hidden_states = adaptation_module(
+                    hidden_states,
+                    acoustic_mem,
+                    acoustic_sep,
+                    mem_mask=acoustic_mask,
+                    mem_conf=acoustic_conf,
+                    mem_ctc_mask=acoustic_ctc_mask,
+                    ctc_modules=ctc_modules,
+                )
 
         # Fully Connected
         residual = hidden_states

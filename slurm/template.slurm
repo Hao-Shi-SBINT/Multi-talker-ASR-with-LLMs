@@ -32,6 +32,9 @@ for arg in "$@"; do
     decoder_cross_attention=*)        decoder_cross_attention="${arg#*=}" ;;
     decoder_cross_attention_type=*)   decoder_cross_attention_type="${arg#*=}" ;;
     decoder_cross_attention_feature=*) decoder_cross_attention_feature="${arg#*=}" ;;
+    decoder_cross_attention_dynamic=*) decoder_cross_attention_dynamic="${arg#*=}" ;;
+    decoder_cross_attention_dynamic_threshold=*) decoder_cross_attention_dynamic_threshold="${arg#*=}" ;;
+    decoder_cross_attention_dynamic_loss=*) decoder_cross_attention_dynamic_loss="${arg#*=}" ;;
     adapter_only_decoder=*)           adapter_only_decoder="${arg#*=}" ;;
     per_device_train_batch_size=*)    per_device_train_batch_size="${arg#*=}" ;;
     per_device_eval_batch_size=*)     per_device_eval_batch_size="${arg#*=}" ;;
@@ -60,7 +63,7 @@ done
 # Fixed/common parameters
 stage="${stage-3}"
 stop_stage="${stop_stage-3}"
-epoch="${epoch-100}"
+epoch="${epoch-50}"
 encoder="${encoder-wavlm}"
 eval_steps="${eval_steps-1600}"
 virtual_env="${virtual_env-/lustre/users/shi/toolkits/m_speaker_llm/venv}"
@@ -77,6 +80,9 @@ separator_hidden="${separator_hidden-796}"
 decoder_cross_attention="${decoder_cross_attention-false}"
 decoder_cross_attention_type="${decoder_cross_attention_type-tiny}"
 decoder_cross_attention_feature="${decoder_cross_attention_feature-raw}"
+decoder_cross_attention_dynamic="${decoder_cross_attention_dynamic-false}"
+decoder_cross_attention_dynamic_threshold="${decoder_cross_attention_dynamic_threshold-0.0}"
+decoder_cross_attention_dynamic_loss="${decoder_cross_attention_dynamic_loss-false}"
 
 # Other toggles
 train_mode="${train_mode-hybrid}"
@@ -131,6 +137,9 @@ bash ../run.sh \
   decoder_cross_attention=$decoder_cross_attention \
   decoder_cross_attention_type=$decoder_cross_attention_type \
   decoder_cross_attention_feature=$decoder_cross_attention_feature \
+  decoder_cross_attention_dynamic=$decoder_cross_attention_dynamic \
+  decoder_cross_attention_dynamic_threshold=$decoder_cross_attention_dynamic_threshold \
+  decoder_cross_attention_dynamic_loss=$decoder_cross_attention_dynamic_loss \
   cache_dir=$cache_dir \
   seed=$seed \
   talker_numbers=$talker_numbers \

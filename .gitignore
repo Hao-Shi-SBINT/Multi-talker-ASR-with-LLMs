@@ -12,3 +12,5 @@ exp_ctc_finished
 exp_ctcrepair_finished
 exp_separator
 exp_sot_finished
+exp_ctc-refine-cross_attention_tiny_sep
+exp_crossatt_adap_finished

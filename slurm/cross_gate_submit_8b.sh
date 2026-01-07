@@ -2,13 +2,24 @@ EXCLUDE_FILE="/lustre/teams/mmai/mmai-job-setting/exclude_nodes.txt"
 EXCLUDE_NODES=""
 
 if [[ -r "$EXCLUDE_FILE" ]]; then
+  # 解析出逗号分隔的 node list（可能为空）
   EXCLUDE_NODES="$(
-    grep -Ev '^[[:space:]]*(#|$)' "$EXCLUDE_FILE" |   # 去掉注释行与空行
-    tr -d ' ' |                                       # 去掉可能的空格
-    paste -sd, -                                      # 用逗号拼接成一行
+    awk '
+      /^[[:space:]]*#/ {next}   # skip comment
+      NF==0 {next}              # skip blank
+      {
+        gsub(/[[:space:]]+/, "", $0)
+        if ($0 == "") next
+        if (c++) printf ","
+        printf "%s", $0
+      }
+    ' "$EXCLUDE_FILE"
   )"
+
+  # 如果为空 -> 仍然保持空字符串；不为空 -> 变成完整参数字符串
+  [[ -n "$EXCLUDE_NODES" ]] && EXCLUDE_NODES="--exclude=$EXCLUDE_NODES"
 else
-  echo "[WARN] exclude file not readable: $EXCLUDE_FILE (skip --exclude)"
+  echo "[WARN] exclude file not readable: $EXCLUDE_FILE (skip --exclude)" >&2
 fi
 
 ctc=true
@@ -17,14 +28,14 @@ adapter_only_decoder=false
 train_mode=attention
 ef=true
 
-talker_ctc_refine=true
+talker_ctc_refine=false
 
 partial_encoder_unfreeze=""
 partial_decoder_unfreeze=""
 partial_others_unfreeze="cross_att_adap,serilized_refine"
 
 decoder_cross_attention=true
-decoder_cross_attention_type=tiny
+decoder_cross_attention_type=gatetiny
 decoder_cross_attention_feature=sep
 
 per_device_train_batch_size=8

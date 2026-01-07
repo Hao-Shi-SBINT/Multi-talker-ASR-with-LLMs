@@ -29,6 +29,7 @@ from modeling_llama import LlamaForCausalLM
 from modeling_wavlm import WavLMModel
 from separator import Separator
 from tiny_crossatt_module import TinyCrossAttnAdapter
+from gate_tiny_crossatt_module import GatedTinyCrossAttnAdapter
 from ctcaware_crossatt_module import CTCAwareTinyCrossAttnAdapter
 from ctc import CTC
 from down_sampling import WavLMPostDownsample
@@ -158,6 +159,9 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         self.decoder_cross_attention = getattr(self.config, "decoder_cross_attention", False)
         self.decoder_cross_attention_type = getattr(self.config, "decoder_cross_attention_type", "tiny")
         self.decoder_cross_attention_feature = getattr(self.config, "decoder_cross_attention_feature", "raw")
+        self.decoder_cross_attention_dynamic = getattr(self.config, "decoder_cross_attention_dynamic", "false")
+        self.decoder_cross_attention_dynamic_threshold = getattr(self.config, "decoder_cross_attention_dynamic_threshold", 0.0)
+        self.decoder_cross_attention_dynamic_loss = getattr(self.config, "decoder_cross_attention_dynamic_loss", False)
 
         self.ctc_token_builder = MultiSpkCTCTokenBuilder()
 
@@ -202,6 +206,16 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                     )
                     for _ in range(self.decoder.config.num_hidden_layers)
                 ])
+            elif(self.decoder_cross_attention_type == "gatetiny"):
+                self.cross_att_adap = nn.ModuleList([
+                    GatedTinyCrossAttnAdapter(
+                        hidden_size=self.decoder.config.hidden_size,
+                        mem_dim=self.config.encoder.output_hidden_size,
+                        attn_dim=512,
+                        dropout=self.config.decoder.attention_dropout,
+                    )
+                    for _ in range(self.decoder.config.num_hidden_layers)
+                ])
             elif(self.decoder_cross_attention_type == "ctcaware"):
                 self.cross_att_adap = nn.ModuleList([
                     CTCAwareTinyCrossAttnAdapter(
@@ -215,6 +229,13 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
 
         else:
             self.cross_att_adap = None
+
+        if self.decoder_cross_attention_dynamic:
+            self.layer_gate_logits = nn.Parameter(
+                torch.full((self.decoder.config.num_hidden_layers,), float(-2.0))
+            )
+        else:
+            self.layer_gate_logits = None
 
         # get encoder output hidden size
         self.encoder_output_dim = getattr(config.encoder, "output_hidden_size", config.encoder.hidden_size)
@@ -720,6 +741,8 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             acoustic_conf=acoustic_conf,
             acoustic_ctc_mask=encoder_attention_mask_ctc,
             adaptation_modules=self.cross_att_adap,
+            adaptation_layer_gate_modules=self.layer_gate_logits,
+            adaptation_layer_gate_modules_threshold=self.decoder_cross_attention_dynamic_threshold,
             ctc_modules=self.serialized_ctc,
             **kwargs_decoder,
         )
@@ -738,6 +761,8 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 encoder_attention_mask_ctc=encoder_attention_mask_ctc,
                 label_spks=label_spks,
                 label_spks_lengths=label_spks_lengths,
+                cross_att_layer_gate=self.layer_gate_logits,
+                cross_att_layer_gate_loss=self.decoder_cross_attention_dynamic_loss,
                 talker_numbers=self.talker_numbers,
                 shared_params=shared_params,
                 return_dict=return_dict,

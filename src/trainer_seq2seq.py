@@ -1139,7 +1139,7 @@ class Seq2SeqTrainer(Trainer):
                     for p, g in zip(shared_params, proj_shared):
                         p.grad = g.detach()
             # ----------------------------------------------------------------------
-
+            
         # Finally we need to normalize the loss for reporting (keep v4.47 behavior)
         if num_items_in_batch is None:
             return loss.detach() / self.args.gradient_accumulation_steps

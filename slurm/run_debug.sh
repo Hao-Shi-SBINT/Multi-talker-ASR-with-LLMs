@@ -14,14 +14,17 @@ cd /lustre/users/shi/toolkits/m_speaker_llm/Multi-talker-ASR-with-LLMs/slurm
 # wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_decoder-ctc-libri2mix_noisy
 stage=3
 stop_stage=3
-epoch=50
+epoch=30
 corpus=libri2mix_mini
 # corpus=libri3mix_noisy
 talker_numbers=2
 
 decoder_cross_attention=true
-decoder_cross_attention_type=tiny
+decoder_cross_attention_type=gatetiny
 decoder_cross_attention_feature=sep
+decoder_cross_attention_dynamic=true
+decoder_cross_attention_dynamic_threshold=0.1
+decoder_cross_attention_dynamic_loss=true
 
 encoder=wavlm
 decoder=Llama-3.2-1B
@@ -41,8 +44,8 @@ instruct=false
 
 
 talker_ctc=true
-talker_ctc_refine=true
-eval_steps=16
+talker_ctc_refine=false
+eval_steps=1600
 virtual_env=/lustre/users/shi/toolkits/m_speaker_llm/venv
 ctc_bridge=false
 ctc_bridge_type=gate
@@ -55,7 +58,7 @@ output_dir=exp
 partial_encoder_unfreeze=""
 partial_decoder_unfreeze=""
 # partial_others_unfreeze="ctc_extractor_concat,enc_to_dec_proj"
-partial_others_unfreeze="cross_att_adap,serilized_refine"
+partial_others_unfreeze="cross_att_adap,serilized_refine,layer_gate_logits"
 
 
 
@@ -101,6 +104,9 @@ bash ../run.sh \
 	decoder_cross_attention=$decoder_cross_attention \
 	decoder_cross_attention_type=$decoder_cross_attention_type \
 	decoder_cross_attention_feature=$decoder_cross_attention_feature \
+	decoder_cross_attention_dynamic=$decoder_cross_attention_dynamic \
+	decoder_cross_attention_dynamic_threshold=$decoder_cross_attention_dynamic_threshold \
+	decoder_cross_attention_dynamic_loss=$decoder_cross_attention_dynamic_loss \
 	output_dir=${output_dir} \
 	cache_dir=${cache_dir} \
 	precision=$precision \

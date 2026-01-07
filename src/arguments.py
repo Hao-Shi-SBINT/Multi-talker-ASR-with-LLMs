@@ -86,6 +86,18 @@ class ModelArguments:
         default="raw",
         metadata={"help": "Feature of cross attention module."}
     )
+    decoder_cross_attention_dynamic: str = field(
+        default="false",
+        metadata={"help": "Layer gates for cross attention"}
+    )
+    decoder_cross_attention_dynamic_threshold: float = field(
+        default=0.0,
+        metadata={"help": "Threshold for layer gating."},
+    )
+    decoder_cross_attention_dynamic_loss : bool = field(
+        default=False,
+        metadata={"help": "Whether to use dynamic loss for training cross-attention gate."},
+    )
 
     token: str = field(
         default=None,

@@ -188,6 +188,8 @@ class HybridLoss(nn.Module):
         encoder_attention_mask_ctc=None,
         label_spks=None,
         label_spks_lengths=None,
+        cross_att_layer_gate=None,
+        cross_att_layer_gate_loss=None,
         talker_numbers=1,
         shared_params=None,
         return_dict=True,
@@ -348,6 +350,13 @@ class HybridLoss(nn.Module):
         elif self.mode == 'hybrid':
             total_loss = self.alpha * loss_attn + (1.0 - self.alpha) * loss_ctc
             self.last_ctc_per_head = ctc_per_head
+
+        if cross_att_layer_gate_loss:
+            layer_gates = torch.sigmoid(cross_att_layer_gate)
+            gate_mean = layer_gates.mean()
+            alpha = 1e-4
+            loss_sparse = alpha * gate_mean
+            total_loss += loss_sparse
 
         return total_loss
 
