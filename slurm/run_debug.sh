@@ -20,11 +20,12 @@ corpus=libri2mix_mini
 talker_numbers=2
 
 decoder_cross_attention=true
-decoder_cross_attention_type=gatetiny
+decoder_cross_attention_type=adapgatetiny
 decoder_cross_attention_feature=sep
-decoder_cross_attention_dynamic=true
-decoder_cross_attention_dynamic_threshold=0.1
-decoder_cross_attention_dynamic_loss=true
+decoder_cross_attention_dynamic=false
+decoder_cross_attention_dynamic_threshold=0.01
+decoder_cross_attention_dynamic_ratio=0.6
+decoder_cross_attention_dynamic_loss=false
 
 encoder=wavlm
 decoder=Llama-3.2-1B
@@ -45,10 +46,14 @@ instruct=false
 
 talker_ctc=true
 talker_ctc_refine=false
-eval_steps=1600
+eval_steps=160
 virtual_env=/lustre/users/shi/toolkits/m_speaker_llm/venv
 ctc_bridge=false
 ctc_bridge_type=gate
+
+r_max=4
+lora_alpha=4
+
 
 cache_dir=/lustre/users/shi/.hf_cache
 
@@ -58,7 +63,7 @@ output_dir=exp
 partial_encoder_unfreeze=""
 partial_decoder_unfreeze=""
 # partial_others_unfreeze="ctc_extractor_concat,enc_to_dec_proj"
-partial_others_unfreeze="cross_att_adap,serilized_refine,layer_gate_logits"
+partial_others_unfreeze="q_lora_A,q_lora_B,q_rank_logits,out_lora_A,out_lora_B,out_rank_logits,k_lora_A,k_lora_B,k_rank_logits,v_lora_A,v_lora_B,v_rank_logits"
 
 
 
@@ -106,7 +111,10 @@ bash ../run.sh \
 	decoder_cross_attention_feature=$decoder_cross_attention_feature \
 	decoder_cross_attention_dynamic=$decoder_cross_attention_dynamic \
 	decoder_cross_attention_dynamic_threshold=$decoder_cross_attention_dynamic_threshold \
+	decoder_cross_attention_dynamic_ratio=$decoder_cross_attention_dynamic_ratio \
 	decoder_cross_attention_dynamic_loss=$decoder_cross_attention_dynamic_loss \
+	r_max=${r_max} \
+	lora_alpha=${lora_alpha} \
 	output_dir=${output_dir} \
 	cache_dir=${cache_dir} \
 	precision=$precision \
