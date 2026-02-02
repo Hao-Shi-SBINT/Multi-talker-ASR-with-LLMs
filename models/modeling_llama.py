@@ -22,6 +22,8 @@ from typing import Callable, List, Optional, Tuple, Union, Sequence
 import torch
 import torch.utils.checkpoint
 from torch import nn
+import torch.distributed as dist
+
 import os
 import sys
 parent = os.path.abspath(os.path.join(__file__, "..", ".."))
@@ -54,6 +56,37 @@ from llama_modules import (
 )
 
 logger = logging.get_logger(__name__)
+
+
+def sample_gate_aware_drop_flag(gate: torch.Tensor,
+                                p_max: float,
+                                training: bool) -> torch.Tensor:
+    """
+    gate: 标量 tensor，已经是 sigmoid(gate_logit) 之后的值，范围 [0,1]
+    p_max: 训练时最大的丢层概率，比如 0.1 或 0.2
+    return: 标量 tensor，0. 或 1.，1=drop（丢层），0=keep（保留）
+            在 DDP 下所有 rank 一样
+    """
+    device = gate.device
+    if (not training) or p_max <= 0.0:
+        return torch.zeros(1, device=device)  # 不丢层
+
+    # gate 越小 → p_drop 越大
+    g_detach = gate.detach().clamp(0.0, 1.0)
+    p_drop = p_max * (1.0 - g_detach)   # in [0, p_max]
+
+    # 保证多卡一致：rank0 采样，broadcast
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:
+            rand = torch.rand(1, device=device)
+        else:
+            rand = torch.zeros(1, device=device)
+        dist.broadcast(rand, src=0)
+    else:
+        rand = torch.rand(1, device=device)
+
+    drop_flag = (rand < p_drop).float()  # 1=drop, 0=keep
+    return drop_flag
 
 
 class LlamaModel(LlamaPreTrainedModel):
@@ -108,6 +141,7 @@ class LlamaModel(LlamaPreTrainedModel):
         adaptation_modules: Optional[Sequence[nn.Module]] = None,
         adaptation_layer_gate_modules: Optional[Sequence[nn.Module]] = None,
         adaptation_layer_gate_modules_threshold: torch.FloatTensor = None,
+        adaptation_layer_gate_modules_threshold_ratio: torch.FloatTensor = None,
         ctc_modules: Optional[Sequence[nn.Module]] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
@@ -200,13 +234,9 @@ class LlamaModel(LlamaPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
-        logits = adaptation_layer_gate_modules.detach().cpu()
-        probs  = F.softmax(adaptation_layer_gate_modules, dim=0).detach().cpu()
-        logits_str = " ".join(f"{v:.8f}" for v in logits.tolist())
-        probs_str  = " ".join(f"{p:.8f}" for p in probs.tolist())
-
-        # print("layer_gate_logits:", logits_str)
-        print("layer_gate_softmax:", probs_str)
+        keep_mask = None
+        drop_flag = None
+        gate = None
 
         # for decoder_layer in self.layers[: self.config.num_hidden_layers]:
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
@@ -218,10 +248,18 @@ class LlamaModel(LlamaPreTrainedModel):
             else:
                 adaptation_module = None
 
-            if adaptation_layer_gate_modules is not None:
-                adaptation_layer_gate_module = adaptation_layer_gate_modules[layer_idx]
+            if adaptation_layer_gate_modules:
+                # 当前层的 logit（标量）
+                adaptation_layer_gate_module = True # adaptation_layer_gate_modules[layer_idx]
+                keep_this_layer = None
+                gate = None
+                drop_flag = torch.zeros(1, device=hidden_states.device)
             else:
-                adaptation_layer_gate_module = None
+                # 没有 layer gate：不做 layer-wise 控制
+                adaptation_layer_gate_module = False
+                keep_this_layer = None
+                gate = None
+                drop_flag = torch.zeros(1, device=hidden_states.device)
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
@@ -237,6 +275,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     adaptation_module,
                     adaptation_layer_gate_module,
                     adaptation_layer_gate_modules_threshold,
+                    keep_this_layer,
+                    drop_flag,                 # 👈 新增
                     acoustic_mem,
                     acoustic_sep,
                     acoustic_mask,
@@ -257,6 +297,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     adaptation_module=adaptation_module,
                     adaptation_layer_gate_module=adaptation_layer_gate_module,
                     adaptation_layer_gate_modules_threshold=adaptation_layer_gate_modules_threshold,
+                    keep_this_layer=keep_this_layer,
+                    drop_flag=drop_flag,       # 👈 同样这里也要传
                     acoustic_mem=acoustic_mem,
                     acoustic_sep=acoustic_sep,
                     acoustic_mask=acoustic_mask,

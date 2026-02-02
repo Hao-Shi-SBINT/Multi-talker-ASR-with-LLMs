@@ -44,8 +44,8 @@ decoder_cross_attention_dynamic_threshold=0.1
 decoder_cross_attention_dynamic_ratio=0.1
 decoder_cross_attention_dynamic_loss=false
 
-r_max=8 #16
-lora_alpha=8
+r_max=8
+lora_alpha=4
 
 per_device_train_batch_size=8
 per_device_eval_batch_size=8

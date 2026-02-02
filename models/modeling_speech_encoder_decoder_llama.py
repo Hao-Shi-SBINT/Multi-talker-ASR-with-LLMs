@@ -30,7 +30,9 @@ from modeling_wavlm import WavLMModel
 from separator import Separator
 from tiny_crossatt_module import TinyCrossAttnAdapter
 from gate_tiny_crossatt_module import GatedTinyCrossAttnAdapter
+from adap_gate_tiny_crossatt_module import AdapGatedTinyCrossAttnAdapter
 from ctcaware_crossatt_module import CTCAwareTinyCrossAttnAdapter
+from crossatt_core_module import AcousticCrossAttnCore, PerLayerAcousticAdapterWrapper
 from ctc import CTC
 from down_sampling import WavLMPostDownsample
 from losses import HybridLoss
@@ -162,6 +164,9 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
         self.decoder_cross_attention_dynamic = getattr(self.config, "decoder_cross_attention_dynamic", "false")
         self.decoder_cross_attention_dynamic_threshold = getattr(self.config, "decoder_cross_attention_dynamic_threshold", 0.0)
         self.decoder_cross_attention_dynamic_loss = getattr(self.config, "decoder_cross_attention_dynamic_loss", False)
+        self.decoder_cross_attention_dynamic_ratio = getattr(self.config, "decoder_cross_attention_dynamic_ratio", 0.8)
+        self.r_max = getattr(self.config, "r_max", 16)
+        self.lora_alpha = getattr(self.config, "lora_alpha", 16)
 
         self.ctc_token_builder = MultiSpkCTCTokenBuilder()
 
@@ -226,16 +231,26 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                     )
                     for _ in range(self.decoder.config.num_hidden_layers)
                 ])
+            elif(self.decoder_cross_attention_type == "adapgatetiny"):
+                self.cross_att_adap = nn.ModuleList([
+                    AdapGatedTinyCrossAttnAdapter(
+                        hidden_size=self.decoder.config.hidden_size,
+                        mem_dim=self.config.encoder.output_hidden_size,
+                        attn_dim=512,
+                        dropout=self.config.decoder.attention_dropout,
+                        r_max=self.r_max,
+                        lora_alpha=self.lora_alpha,
+                        lora_dropout=0.05,
+                        init_rank_logit=2.0,
+                        apply_lora_to="qkv_out",
+                    )
+                    for _ in range(self.decoder.config.num_hidden_layers)
+                ])
 
         else:
             self.cross_att_adap = None
 
-        if self.decoder_cross_attention_dynamic:
-            self.layer_gate_logits = nn.Parameter(
-                torch.full((self.decoder.config.num_hidden_layers,), float(-2.0))
-            )
-        else:
-            self.layer_gate_logits = None
+        self.layer_gate_logits = None
 
         # get encoder output hidden size
         self.encoder_output_dim = getattr(config.encoder, "output_hidden_size", config.encoder.hidden_size)
@@ -588,8 +603,11 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 ctc_modules=self.serialized_ctc,
             )
 
+        acoustic_mem = None
+        acoustic_mask = None
+        acoustic_conf = None
+
         if self.decoder_cross_attention:
-            acoustic_conf = None
             if(self.decoder_cross_attention_feature == "mix"):
                 acoustic_mem = mixed_encoding_feature
                 acoustic_mask = encoder_attention_mask_ctc
@@ -737,12 +755,13 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
             return_dict=return_dict,
             acoustic_mem=acoustic_mem, 
             acoustic_sep=sep_hidden_states,
-            acoustic_mask=~acoustic_mask,
+            acoustic_mask = (~acoustic_mask) if (acoustic_mask is not None) else acoustic_mask,
             acoustic_conf=acoustic_conf,
             acoustic_ctc_mask=encoder_attention_mask_ctc,
             adaptation_modules=self.cross_att_adap,
-            adaptation_layer_gate_modules=self.layer_gate_logits,
+            adaptation_layer_gate_modules=self.decoder_cross_attention_dynamic, # --> Currently, True/False
             adaptation_layer_gate_modules_threshold=self.decoder_cross_attention_dynamic_threshold,
+            adaptation_layer_gate_modules_threshold_ratio=self.decoder_cross_attention_dynamic_ratio,
             ctc_modules=self.serialized_ctc,
             **kwargs_decoder,
         )
@@ -764,9 +783,30 @@ class SpeechEncoderDecoderModelLlama(PreTrainedModel, GenerationMixin_Instruct):
                 cross_att_layer_gate=self.layer_gate_logits,
                 cross_att_layer_gate_loss=self.decoder_cross_attention_dynamic_loss,
                 talker_numbers=self.talker_numbers,
+                cross_att_layer_gate_ratio=self.decoder_cross_attention_dynamic_ratio,
                 shared_params=shared_params,
                 return_dict=return_dict,
             )
+
+
+            """
+            # Below loss is for cross attention low-rank adaptation
+            if(self.cross_att_adap):
+                L = len(self.cross_att_adap)
+                target_rank_per_layer = 4.0                 # 512 attn_dim 情况下推荐先用 4
+                K_total = target_rank_per_layer * L
+
+                lambda_rank = 5e-5
+                beta_budget = 1e-3
+
+                total_usage = torch.zeros([], device=loss.device)
+                for adp in self.cross_att_adap:
+                    total_usage = total_usage + adp.rank_usage()   # tensor, 可反传
+                rank_loss = lambda_rank * total_usage + beta_budget * (total_usage - K_total) ** 2
+
+                loss = loss + rank_loss
+            """
+
             
         if not return_dict:
             if loss is not None:

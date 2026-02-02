@@ -3,6 +3,8 @@ import os
 import sys
 import logging
 import datasets
+import torch
+import re
 
 from dataclasses import dataclass, field
 import transformers
@@ -20,13 +22,11 @@ from src.trainer_seq2seq import Seq2SeqTrainer
 from utils.checkpoint_checking_utils import resume_or_raise
 from utils.param_utils import checking_trainable_params
 from utils.unfreeze_utils import unfreeze_selected_params
-from utils.freeze_utils import freeze_model
 from utils.resample_dataset_utils import maybe_resample_dataset
 from utils.vectorized_dataset_utils import preprocess_and_filter
 from utils.metric_utils import compute_metrics
 from utils.processor_utils import save_and_create_processor
 from utils.training_stats_utils import build_training_kwargs
-from utils.load_sep_ctc_from_partial import load_sep_ctc_from_partial
 
 from transformers import (
     HfArgumentParser, 
@@ -40,8 +40,31 @@ from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from safetensors.torch import save_file, load_file
 from safetensors.torch import load_model, save_model
 
+from datasets import DatasetDict, load_dataset, load_from_disk
+
 
 require_version("datasets>=1.18.0", "To fix: pip install -r examples/pytorch/speech-recognition/requirements.txt")
+
+import torch.distributed as dist
+
+def setup_distributed():
+    # torchrun 会设置这些环境变量
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        dist.init_process_group(backend="nccl")
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        return True, rank, world_size, local_rank, device
+    else:
+        # 单卡/非分布式
+        return False, 0, 1, 0, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def cleanup_distributed(is_dist):
+    if is_dist and dist.is_initialized():
+        dist.destroy_process_group()
+
 
 
 def main():
@@ -56,11 +79,6 @@ def main():
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     send_example_telemetry("run_speech_recognition_seq2seq", model_args, data_args, training_args)
-
-    if model_args.pretrain_separator_path in ("None", "none", ""):
-        pretrain_separator_path = None
-    else:
-        pretrain_separator_path = model_args.pretrain_separator_path
 
     # 2. Set logs
     logging.basicConfig(
@@ -85,12 +103,12 @@ def main():
     set_seed(training_args.seed)
 
     # 4. Load dataset
-    raw_datasets = load_dataset_or_fail(data_args, logger)
+    raw_datasets = DatasetDict()
+    raw_datasets = load_from_disk(data_args.dataset_name)
 
     # 5. Load pretrained model, tokenizer, and feature extractor
     config = load_config(model_args)
     config.talker_ctc = model_args.talker_ctc
-    config.talker_ctc_refine = model_args.talker_ctc_refine
     config.talker_numbers = model_args.talker_numbers
     config.separator_hidden = model_args.separator_hidden
     config.train_mode = model_args.train_mode
@@ -104,8 +122,6 @@ def main():
     config.decoder_cross_attention_dynamic_threshold = model_args.decoder_cross_attention_dynamic_threshold
     config.decoder_cross_attention_dynamic_loss = model_args.decoder_cross_attention_dynamic_loss
     config.decoder_cross_attention_dynamic_ratio = model_args.decoder_cross_attention_dynamic_ratio
-    config.r_max = model_args.r_max
-    config.lora_alpha = model_args.lora_alpha
     logger.info("Model configuration %s", config)
 
     # SpecAugment for whisper models
@@ -119,19 +135,11 @@ def main():
     logger.info("Tokenizer %s", tokenizer)
 
     model = load_aed_model(model_args, config, logger)
-    if(pretrain_separator_path):
-        model = load_sep_ctc_from_partial(model, pretrain_separator_path)
+    model.eval()
 
-    # 6. Insert adapters into deocder and set the trainable parameters
-    # If the training mode is 'ctc': do not insert adapter and we should freeze all parameters
-    if(model_args.train_mode == 'ctc'):
-        freeze_model(model)
-        unfreeze_selected_params(model, model_args.train_mode, model_args)
-    else:
-        freeze_model(model)
-        if(model_args.adapter_only_decoder):
-            insert_adapters(model, model_args, config)
-        unfreeze_selected_params(model, model_args.train_mode, model_args)
+    # Setting CUDA
+    model = model.to("cuda")
+    device = model.device
 
     # 7. Some other settings for configuration
     # Here we write a new get_input_embeddings for fix the undefined of pre-defined function of SpeechEncoderDecoderModel
@@ -143,7 +151,7 @@ def main():
     model.config.forced_decoder_ids = None
 
     # 8. Dataset
-    raw_datasets = maybe_resample_dataset(raw_datasets, data_args, feature_extractor)
+    # raw_datasets = maybe_resample_dataset(raw_datasets, data_args, feature_extractor)
     vectorized_datasets = preprocess_and_filter(
             raw_datasets,
             data_args,
@@ -151,6 +159,7 @@ def main():
             tokenizer,
             config,
             training_args,
+            inference_mode=True,
             )
 
     # 9. Create a single speech processor
@@ -166,59 +175,108 @@ def main():
         config=config,
     )
 
-    # Some Special settings for increase dataloding speed
-    # training_args.remove_unused_columns = False
-    # training_args.dataloader_num_workers = 4
-    # training_args.dataloader_pin_memory = True
-    # training_args.group_by_length = False
+    # 11. Define skip special tokens during inference
+    def skip_special_tokens(est_text):
+        allowed_special_tokens = ["<sc>", "<bos_prompt>", "<eos_prompt>", "<bos_speech>", "<eos_speech>", "<bos_response>", "<eos_response>"]
+        tokens = re.findall(r"<[^>]+>|[^<>\s]+", est_text)
+        processed_text = " ".join(
+            token for token in tokens
+            if token in allowed_special_tokens or not (token.startswith("<") and token.endswith(">"))
+            )
+        return processed_text
 
-    # 11. Initialize Trainer
-    trainer = Seq2SeqTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=vectorized_datasets["train"] if training_args.do_train else None,
-        eval_dataset=vectorized_datasets["eval"] if training_args.do_eval else None,
-        processing_class=feature_extractor,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics(tokenizer, cache_dir=model_args.cache_dir, ignore_id=model.config.ignore_token_id) if training_args.predict_with_generate else None,
-    )
+    is_dist, rank, world_size, local_rank, device = setup_distributed()
 
-    # 12. Training
-    if training_args.do_train:
-        checkpoint = None
-        if training_args.resume_from_checkpoint is not None:
-            checkpoint = training_args.resume_from_checkpoint
-        elif last_ckpt is not None:
-            checkpoint = last_ckpt
+    # 12. Inference
+    _set = os.path.basename(data_args.dataset_name)
 
-        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+    # 每个rank写各自的文件，避免多进程写同一个文件导致冲突
+    label_path_rank = os.path.join(training_args.output_dir, f"{_set}_label.rank{rank}.text")
+    decod_path_rank = os.path.join(training_args.output_dir, f"{_set}_decod.rank{rank}.text")
 
-        best_model = trainer.model
-        if(model_args.train_mode == 'ctc') or (model_args.adapter_only_decoder == False):
-            save_model(best_model, os.path.join(training_args.output_dir, "model.safetensors"))
-        else:
-            save_model(best_model, os.path.join(training_args.output_dir, "model_unmerge.safetensors"))
+    model.eval()
 
-        tokenizer.save_pretrained(training_args.output_dir)
+    # datasets.Dataset 支持 shard，会更干净
+    eval_ds = vectorized_datasets["eval"]
+    if world_size > 1:
+        eval_ds = eval_ds.shard(num_shards=world_size, index=rank, contiguous=True)
 
-        metrics = train_result.metrics
-        max_train_samples = (
-            data_args.max_train_samples
-            if data_args.max_train_samples is not None
-            else len(vectorized_datasets["train"])
-        )
-        metrics["train_samples"] = min(max_train_samples, len(vectorized_datasets["train"]))
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-        trainer.save_state()
+    with torch.inference_mode(), \
+         open(label_path_rank, "w") as l_fid, \
+         open(decod_path_rank, "w") as d_fid:
 
-    # 13. Write Training Stats
-    kwargs = build_training_kwargs(model_args, data_args)
+        if rank == 0:
+            logger.info("Decoding begins for %s", data_args.dataset_name)
 
-    if training_args.push_to_hub:
-        trainer.push_to_hub(**kwargs)
-    else:
-        trainer.create_model_card(**kwargs)
+        for i in range(len(eval_ds)):
+            # 只让rank0打log，避免刷屏
+            if rank == 0 and (i % 100 == 0):
+                logger.info("decoding samples %d (rank0 view)", i)
+
+            idx = eval_ds[i]["idx"]
+
+            input_feature = torch.tensor(eval_ds[i]["input_values"]).reshape(1, -1).to(device)
+            if config.instruct:
+                prompts = torch.tensor(eval_ds[i]["prompt_ids"]).reshape(1, -1).to(device)
+            else:
+                prompts = None
+
+            if model_args.ctc_decoding:
+                est = model.generate_ctc(
+                    inputs=input_feature,
+                    prompt_ids=prompts,
+                    max_length=150,
+                    num_beams=1,
+                    synced_gpus=False,
+                    use_cache=True,
+                )
+            else:
+                est = model.generate(
+                    inputs=input_feature,
+                    prompt_ids=prompts,
+                    max_length=150,
+                    num_beams=1,
+                    synced_gpus=False,
+                    use_cache=True,
+                )
+
+            label_text = tokenizer.decode(torch.tensor(eval_ds[i]["labels"]))
+            label_text = skip_special_tokens(label_text)
+
+            if model_args.ctc_decoding:
+                label_text = label_text.replace(tokenizer.decode(eval_ds[i]["prompt_ids"][1:-4]), "")
+
+            est_text = tokenizer.decode(est.reshape(-1), skip_special_tokens=False)
+            est_text = skip_special_tokens(est_text)
+
+            if rank == 0 and (i % 100 == 0):
+                logger.info("label: %s", label_text)
+                logger.info("estim: %s", est_text)
+
+            l_fid.write(idx + " " + label_text + "\n")
+            d_fid.write(idx + " " + est_text + "\n")
+
+    # 等所有rank写完
+    if world_size > 1:
+        dist.barrier()
+
+    # rank0 合并各rank文件到最终文件
+    final_label_path = os.path.join(training_args.output_dir, f"{_set}_label.text")
+    final_decod_path = os.path.join(training_args.output_dir, f"{_set}_decod.text")
+
+    if rank == 0:
+        with open(final_label_path, "w") as out_l, open(final_decod_path, "w") as out_d:
+            for r in range(world_size):
+                lp = os.path.join(training_args.output_dir, f"{_set}_label.rank{r}.text")
+                dp = os.path.join(training_args.output_dir, f"{_set}_decod.rank{r}.text")
+                with open(lp, "r") as f:
+                    out_l.write(f.read())
+                with open(dp, "r") as f:
+                    out_d.write(f.read())
+
+        logger.info("Merged outputs written to: %s and %s", final_label_path, final_decod_path)
+
+    cleanup_distributed(is_dist)
 
 
 if __name__ == "__main__":

@@ -47,8 +47,8 @@ decoder_cross_attention_dynamic_threshold=0.1
 decoder_cross_attention_dynamic_ratio=0.1
 decoder_cross_attention_dynamic_loss=false
 
-r_max=16
-lora_alpha=8
+r_max=8
+lora_alpha=4
 
 stage=3
 stop_stage=4

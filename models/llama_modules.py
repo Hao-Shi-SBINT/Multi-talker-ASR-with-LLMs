@@ -48,6 +48,37 @@ import torch.nn.functional as F
 logger = logging.get_logger(__name__)
 
 
+def compute_ctc_uncertainty_from_logprobs(log_probs: torch.Tensor,
+                                          ctc_mask: torch.Tensor | None = None,
+                                          eps: float = 1e-8) -> torch.Tensor:
+    """
+    根据 CTC 的 log_softmax(logits) 计算每条样本一个不确定性标量 u（平均 entropy）
+
+    Args:
+        log_probs: [B, T, V]    CTC 的 log_softmax 输出
+        ctc_mask: [B, T] bool   True=有效帧, False=padding
+                                (如果你现在的 mask 是 True=padding，就先传 ~mask 进来)
+        eps: float              数值稳定性用
+
+    Returns:
+        u: [B]  每条样本一个不确定性标量（平均 entropy，越大越不确定）
+    """
+    # 概率
+    probs = log_probs.exp()             # [B, T, V]
+    # 每一帧的熵 H(p_t) = -sum p_t log p_t
+    frame_entropy = -(probs * log_probs).sum(dim=-1)  # [B, T]
+
+    if ctc_mask is not None:
+        # ctc_mask: True=valid
+        valid_entropy = frame_entropy * ctc_mask.float()        # padding 位置变 0
+        lengths = ctc_mask.float().sum(dim=-1).clamp(min=1.0)   # [B]
+        u = valid_entropy.sum(dim=-1) / lengths                  # [B]
+    else:
+        u = frame_entropy.mean(dim=-1)                           # [B]
+
+    return u
+
+
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -324,6 +355,8 @@ class LlamaDecoderLayer(nn.Module):
         adaptation_module: Optional[Sequence[nn.Module]] = None,
         adaptation_layer_gate_module: Optional[Sequence[nn.Module]] = None,
         adaptation_layer_gate_modules_threshold: torch.FloatTensor = None,
+        keep_this_layer: Optional[bool] = False,
+        drop_flag: torch.FloatTensor = None, 
         acoustic_mem: torch.FloatTensor = None,
         acoustic_sep: torch.FloatTensor = None,
         acoustic_mask: torch.FloatTensor = None,
@@ -350,34 +383,22 @@ class LlamaDecoderLayer(nn.Module):
         )
         hidden_states = residual + hidden_states
 
+        # ++++
         if adaptation_module is not None and acoustic_mem is not None:
-            if adaptation_layer_gate_module is not None:
-                gate = torch.sigmoid(adaptation_layer_gate_module)
-                skip_threshold = adaptation_layer_gate_modules_threshold
-                if (not self.training) and (gate.item() <= skip_threshold):
-                    pass
-                else:
-                    refined_hidden_states = adaptation_module(
-                        hidden_states,
-                        acoustic_mem,
-                        acoustic_sep,
-                        mem_mask=acoustic_mask,
-                        mem_conf=acoustic_conf,
-                        mem_ctc_mask=acoustic_ctc_mask,
-                        ctc_modules=ctc_modules,
-                    )
-                    #print(gate)
-                    hidden_states = hidden_states + gate * (refined_hidden_states - hidden_states)
-            else:
-                hidden_states = adaptation_module(
-                    hidden_states,
-                    acoustic_mem,
-                    acoustic_sep,
-                    mem_mask=acoustic_mask,
-                    mem_conf=acoustic_conf,
-                    mem_ctc_mask=acoustic_ctc_mask,
-                    ctc_modules=ctc_modules,
-                )
+            # 先统一跑一遍 adapter
+            refined_hidden_states = adaptation_module(
+                hidden_states,
+                acoustic_mem,
+                acoustic_sep,
+                mem_mask=acoustic_mask,
+                mem_conf=acoustic_conf,
+                mem_ctc_mask=acoustic_ctc_mask,
+                ctc_modules=ctc_modules,
+            )
+
+            # 没有 layer gate，就直接用 adapter 输出
+            hidden_states = refined_hidden_states
+
 
         # Fully Connected
         residual = hidden_states

@@ -12,14 +12,14 @@ cd /lustre/users/shi/toolkits/m_speaker_llm/Multi-talker-ASR-with-LLMs/slurm
 # export PATH="/lustre/users/shi/toolkits/m_speaker_llm/Multi-Speaker-ASR-with-LLM/venv/bin:$PATH"
 
 # wavlm-Llama-3.2-1B-Instruct-encoder_freeze-decoder_freeze-adater_decoder-ctc-libri2mix_noisy
-stage=5
-stop_stage=5
+stage=4
+stop_stage=4
 epoch=30
-corpus=libri2mix_clean
+corpus=librispeech2mix
 # corpus=libri3mix_noisy
 talker_numbers=2
 
-decoder_cross_attention=true
+decoder_cross_attention=false
 decoder_cross_attention_type=adapgatetiny
 decoder_cross_attention_feature=sep
 decoder_cross_attention_dynamic=false
@@ -44,7 +44,7 @@ instruct=false
 # instruct=true
 
 
-talker_ctc=true
+talker_ctc=false
 talker_ctc_refine=false
 eval_steps=160
 virtual_env=/lustre/users/shi/toolkits/m_speaker_llm/venv
@@ -81,7 +81,7 @@ pmp=exp_crossatt_finished/mode_attention-wavlm-Llama-3.2-1B-encoder_freeze-decod
 
 precision=fp32
 
-bash ../run.sh \
+bash ../run_librispeechmix.sh \
 	stage=${stage} \
 	stop_stage=${stop_stage} \
 	epoch=$epoch \

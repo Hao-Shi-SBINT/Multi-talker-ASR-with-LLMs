@@ -62,6 +62,14 @@ class ModelArguments:
         default=2,
         metadata={"help": "The number of talker."},
     )
+    r_max: int = field(
+        default=16,
+        metadata={"help": "The r_max for cross attention adaptation."},
+    )
+    lora_alpha: int = field(
+        default=16,
+        metadata={"help": "The alpha of lora for cross attention adaptation."},
+    )
     separator_hidden: int = field(
         default=896,
         metadata={"help": "The number of hidden nodes of separator."},
@@ -98,6 +106,11 @@ class ModelArguments:
         default=False,
         metadata={"help": "Whether to use dynamic loss for training cross-attention gate."},
     )
+    decoder_cross_attention_dynamic_ratio: float = field(
+        default=0.8,
+        metadata={"help": "Threshold for layer gating."},
+    )
+
 
     token: str = field(
         default=None,
